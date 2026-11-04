@@ -107,9 +107,10 @@ var AgentParserOutput = {
 	 * Reduce raw backend output to what agents need:
 	 *
 	 *   full.md   Markdown with YAML front matter (Zotero metadata, source PDF hash)
-	 *   images/   Figures, tables and equations referenced from full.md
+	 *   images/   Images referenced from full.md
 	 *
-	 * Everything else the parser returns (JSON intermediates, a copy of the PDF, etc.) is removed.
+	 * Everything else the parser returns (JSON intermediates, a copy of the PDF, crops of equations
+	 * and tables that full.md contains as LaTeX/HTML, etc.) is removed.
 	 */
 	async finalize(stagingDir, { item, attachment, filePath, sha256, parser }) {
 		await this._hoistSingleDirectory(stagingDir);
@@ -130,7 +131,8 @@ var AgentParserOutput = {
 				await IOUtils.remove(path, { recursive: true });
 			}
 		}
-		
+		await this._pruneImages(PathUtils.join(stagingDir, this.IMAGES_DIR), md);
+
 		let meta = {
 			parsedAt: new Date().toISOString(),
 			parser,
@@ -282,6 +284,36 @@ var AgentParserOutput = {
 			}
 		}
 		return files;
+	},
+
+
+	/**
+	 * Remove images that the Markdown doesn't reference
+	 *
+	 * MinerU saves a crop of every equation and table block next to the figures, although the
+	 * Markdown has those as LaTeX and HTML. Image names are content hashes, so a file counts as
+	 * referenced if its name (plain or URL-encoded) appears anywhere in the Markdown, which covers
+	 * both ![](images/...) and <img src="..."> inside HTML tables.
+	 */
+	async _pruneImages(imagesDir, md) {
+		if (!(await IOUtils.exists(imagesDir))) {
+			return;
+		}
+		let kept = 0;
+		let removed = 0;
+		for (let rel of await this._listFiles(imagesDir)) {
+			let name = rel.split('/').pop();
+			if (md.includes(name) || md.includes(encodeURIComponent(name))) {
+				kept++;
+				continue;
+			}
+			await IOUtils.remove(PathUtils.join(imagesDir, ...rel.split('/')));
+			removed++;
+		}
+		if (!kept) {
+			await IOUtils.remove(imagesDir, { recursive: true });
+		}
+		Zotero.debug(`Agent Parser: Kept ${kept} referenced image(s), removed ${removed} unreferenced`);
 	},
 
 

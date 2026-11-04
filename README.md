@@ -89,10 +89,10 @@
 ├── 论文.pdf
 └── parsed/                  # 文件夹名可在设置中修改
     ├── full.md              # Markdown 正文
-    └── images/              # 图片、表格、公式截图（full.md 中用相对路径引用）
+    └── images/              # full.md 引用的插图（用相对路径引用）
 ```
 
-`full.md` 开头是一段 YAML，记录标题、作者、年份、DOI、标签、`zotero://` 链接、源 PDF 的 SHA-256 和解析时间；正文中公式为 LaTeX，表格为 HTML。解析服务返回的其他文件（JSON 中间结果、PDF 副本等）会被丢弃。
+`full.md` 开头是一段 YAML，记录标题、作者、年份、DOI、标签、`zotero://` 链接、源 PDF 的 SHA-256 和解析时间；正文中公式为 LaTeX，表格为 HTML。MinerU 会给每个公式和表格另存一张截图，但正文已经有对应的文本，所以 `images/` 中只保留 `full.md` 实际引用的图片，其余截图会被删除。解析服务返回的其他文件（JSON 中间结果、PDF 副本等）也会被丢弃。
 
 ## 同步说明（重要）
 
