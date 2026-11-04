@@ -21,6 +21,13 @@
 
 在 Zotero 中打开「工具 → 插件」，点右上角齿轮选「从文件安装插件…」，选择对应的 `.xpi`。
 
+发布新版本：
+
+1. 修改 `manifest.json` 中的 `version`。
+2. 运行 `./build.sh && ./update-manifests.sh`。
+3. 提交并推送 `updates.json` 和 `updates-lite.json`。
+4. 创建 `v<版本>` Release，上传 `build/` 中的两个 `.xpi`。清单里记录了文件哈希，所以上传的必须正是这一步生成的文件。
+
 ## 解析方式
 
 在「设置 → Agent Parser」中选择默认解析方式（轻量版只有云端）：
@@ -100,4 +107,4 @@
 - API Token 和 Key 以明文保存在 Zotero 配置目录的 `prefs.js` 中。
 - 云端 v4 API 对单个文件的限制是 200 MB / 200 页，超出时任务会失败并弹出通知。
 - 上传给服务端的文件名统一为 `<附件键>.pdf`，以避开非 ASCII 文件名带来的问题；原文件名会记录在 `full.md` 开头的 YAML 中。
-- `manifest.json` 中的 `update_url` 只是占位地址，发布前需要改成真实地址。轻量版打包时会自动改用 `updates-lite.json`，两个版本各自更新，不会互相切换。
+- 自动更新：完整版读取仓库根目录的 `updates.json`，轻量版读取 `updates-lite.json`，两个版本各自更新，不会互相切换。
