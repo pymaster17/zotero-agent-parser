@@ -2,17 +2,28 @@
 
 一个 Zotero 插件（Zotero 7 及以上），在添加新条目时自动把 PDF 交给 MinerU 解析成 Markdown，，方便 agent 直接读取。解析产物放在 PDF 所在的附件目录里，通过 WebDAV 同步到其他电脑。
 
-## 安装
+## 版本与安装
+
+插件分两个版本，按需选择：
+
+| 版本 | 文件 | 内容 |
+|---|---|---|
+| 轻量版 Agent Parser Lite | `agent-parser-lite-<版本>.xpi` | 只用云端（mineru.net），不含本地 MinerU 的安装和服务管理 |
+| 完整版 Agent Parser | `agent-parser-<版本>.xpi` | 云端 + 本地 MinerU |
+
+两个版本的插件本体都只有几十 KB。完整版只有在设置页点「安装」后，才会下载 Python 环境和模型（约 4.8 GB）。两个版本共用同一个插件 ID 和设置，装其中一个会替换另一个，Token 等设置会保留。
 
 ```sh
-./build.sh          # 生成 build/agent-parser-<版本>.xpi
+./build.sh          # 同时生成 build/agent-parser-<版本>.xpi 和 build/agent-parser-lite-<版本>.xpi
+./build.sh lite     # 只打包轻量版
+./build.sh full     # 只打包完整版
 ```
 
-在 Zotero 中打开「工具 → 插件」，点右上角齿轮选「从文件安装插件…」，选择生成的 `.xpi`。
+在 Zotero 中打开「工具 → 插件」，点右上角齿轮选「从文件安装插件…」，选择对应的 `.xpi`。
 
 ## 解析方式
 
-在「设置 → Agent Parser」中选择默认解析方式：
+在「设置 → Agent Parser」中选择默认解析方式（轻量版只有云端）：
 
 | 方式 | 说明 | 需要配置 |
 |---|---|---|
@@ -89,4 +100,4 @@
 - API Token 和 Key 以明文保存在 Zotero 配置目录的 `prefs.js` 中。
 - 云端 v4 API 对单个文件的限制是 200 MB / 200 页，超出时任务会失败并弹出通知。
 - 上传给服务端的文件名统一为 `<附件键>.pdf`，以避开非 ASCII 文件名带来的问题；原文件名会记录在 `full.md` 开头的 YAML 中。
-- `manifest.json` 中的 `update_url` 只是占位地址，发布前需要改成真实地址。
+- `manifest.json` 中的 `update_url` 只是占位地址，发布前需要改成真实地址。轻量版打包时会自动改用 `updates-lite.json`，两个版本各自更新，不会互相切换。
