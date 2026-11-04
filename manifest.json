@@ -1,7 +1,7 @@
 {
 	"manifest_version": 2,
 	"name": "Agent Parser",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Automatically parse PDFs into agent-readable Markdown with MinerU (cloud or local), stored next to the PDF.",
 	"author": "pymaster17",
 	"applications": {

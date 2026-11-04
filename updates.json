@@ -3,9 +3,9 @@
 		"agent-parser@pymaster17": {
 			"updates": [
 				{
-					"version": "0.1.0",
-					"update_link": "https://github.com/pymaster17/zotero-agent-parser/releases/download/v0.1.0/agent-parser-0.1.0.xpi",
-					"update_hash": "sha256:ff32c586a97d0cb6c8e71d95c9ebd982179790041290df8896a30f8ef29eac64",
+					"version": "0.1.1",
+					"update_link": "https://github.com/pymaster17/zotero-agent-parser/releases/download/v0.1.1/agent-parser-0.1.1.xpi",
+					"update_hash": "sha256:22bb91aafdf21a77eb631f5d25149052cf1063508ceb77f6bfdeceb7a0ab546f",
 					"applications": {
 						"zotero": {
 							"strict_min_version": "7.0"
