@@ -1,0 +1,72 @@
+agentparser-name = Agent Parser
+
+agentparser-menu-parse =
+    .label = 解析 PDF 为 Agent 可读格式
+agentparser-menu-reparse =
+    .label = 强制重新解析 PDF
+agentparser-menu-reveal =
+    .label = 显示解析结果
+agentparser-menu-parse-library =
+    .label = 解析当前库中所有未解析的 PDF…
+
+agentparser-notify-success = PDF 解析完成
+agentparser-notify-failure = PDF 解析失败
+agentparser-notify-batch = 批量解析完成
+agentparser-notify-batch-result = 成功 { $done } 篇，失败 { $failed } 篇（失败原因见「帮助 → 调试输出日志」或错误控制台）
+agentparser-notify-queued = 已加入解析队列：{ $count } 个 PDF
+agentparser-alert-not-parsed = 所选条目还没有解析结果。
+agentparser-alert-library-done = 当前库中的 PDF 都已解析。
+agentparser-confirm-library = 将有 { $count } 个 PDF 加入解析队列。使用云端服务时会消耗解析额度，是否继续？
+
+agentparser-pref-general = 常规
+agentparser-pref-auto-parse =
+    .label = 添加新条目时自动解析 PDF
+agentparser-pref-skip-synced =
+    .label = 跳过从同步下载的条目（由添加它的电脑负责解析）
+agentparser-pref-include-linked =
+    .label = 同时解析链接文件（结果写在 PDF 旁的文件夹中，不经 Zotero 同步）
+agentparser-pref-notifications =
+    .label = 解析完成或失败时显示通知
+agentparser-pref-concurrency = 并发任务数：
+agentparser-pref-timeout = 单个任务超时（分钟）：
+agentparser-pref-wait-file = 等待 PDF 下载完成（分钟）：
+
+agentparser-pref-backend = 解析服务
+agentparser-pref-backend-type = 服务类型：
+agentparser-backend-cloudv4 =
+    .label = MinerU 云端精准解析 API（mineru.net v4）
+agentparser-backend-tasks =
+    .label = MinerU Tasks API（本地部署 4.x / 云端 v1）
+agentparser-pref-cloudv4-desc = 在 mineru.net 的 API 管理页面申请 Token。单个文件不超过 200 MB / 200 页。
+agentparser-pref-tasks-desc = 本地部署：运行 mineru-api（默认 http://127.0.0.1:8000），若启动时设置了 --api-key 则填写 API Key。云端：地址填 https://mineru.net/api 并填写 API Key。
+agentparser-pref-url = 服务地址：
+agentparser-pref-token = API Token：
+agentparser-pref-api-key = API Key：
+agentparser-pref-model-version = 模型版本：
+agentparser-pref-language = 文档语言：
+agentparser-pref-tier = 解析档位：
+agentparser-tier-default =
+    .label = 服务端默认
+agentparser-pref-url-hosts = URL 直传域名：
+agentparser-pref-url-hosts-desc = 来自这些域名（逗号分隔，含子域名）的 PDF 会把下载地址交给 MinerU 直接下载，不再上传本地文件；地址不可用或文件与本地不一致时自动改为上传。
+agentparser-pref-ocr-mode = OCR 模式：
+agentparser-pref-force-ocr =
+    .label = 强制 OCR
+agentparser-pref-formula =
+    .label = 识别公式
+agentparser-pref-table =
+    .label = 识别表格
+agentparser-pref-test =
+    .label = 测试连接
+
+agentparser-pref-output = 解析产物
+agentparser-pref-output-desc = 产物保存在 PDF 所在的附件目录（storage/<附件键>/<文件夹名>/）中，只有 full.md 和 images/ 两项。full.md 开头的 YAML 记录了标题、作者、DOI、Zotero 链接和源 PDF 的哈希。WebDAV 同步会把整个附件目录一起上传；Zotero 自带存储只上传 PDF 本身。
+agentparser-pref-dir-name = 产物文件夹名：
+agentparser-pref-success-tag = 解析成功后添加标签：
+agentparser-pref-mark-sync =
+    .label = 解析完成后标记附件待上传，使 WebDAV 把产物同步到其他电脑
+
+agentparser-pref-queue = 队列
+agentparser-pref-queue-status = 排队 { $queued } 个，进行中 { $running } 个{ $details }
+agentparser-pref-clear-queue =
+    .label = 清空队列

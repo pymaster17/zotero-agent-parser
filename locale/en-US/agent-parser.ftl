@@ -1,0 +1,72 @@
+agentparser-name = Agent Parser
+
+agentparser-menu-parse =
+    .label = Parse PDF for Agents
+agentparser-menu-reparse =
+    .label = Force Re-parse PDF
+agentparser-menu-reveal =
+    .label = Show Parse Results
+agentparser-menu-parse-library =
+    .label = Parse All Unparsed PDFs in Library…
+
+agentparser-notify-success = PDF parsed
+agentparser-notify-failure = PDF parsing failed
+agentparser-notify-batch = Batch parsing finished
+agentparser-notify-batch-result = { $done } succeeded, { $failed } failed (see the Error Console for details)
+agentparser-notify-queued = Added { $count } PDF(s) to the parse queue
+agentparser-alert-not-parsed = The selected items have not been parsed yet.
+agentparser-alert-library-done = All PDFs in this library have already been parsed.
+agentparser-confirm-library = { $count } PDF(s) will be added to the parse queue. Cloud services will use parsing quota. Continue?
+
+agentparser-pref-general = General
+agentparser-pref-auto-parse =
+    .label = Automatically parse PDFs when new items are added
+agentparser-pref-skip-synced =
+    .label = Skip items downloaded via sync (the computer that added them parses them)
+agentparser-pref-include-linked =
+    .label = Also parse linked files (results go next to the PDF and aren't synced by Zotero)
+agentparser-pref-notifications =
+    .label = Show a notification when parsing finishes or fails
+agentparser-pref-concurrency = Concurrent jobs:
+agentparser-pref-timeout = Timeout per job (minutes):
+agentparser-pref-wait-file = Wait for PDF download (minutes):
+
+agentparser-pref-backend = Parsing Service
+agentparser-pref-backend-type = Service:
+agentparser-backend-cloudv4 =
+    .label = MinerU Cloud Precise API (mineru.net v4)
+agentparser-backend-tasks =
+    .label = MinerU Tasks API (local 4.x / cloud v1)
+agentparser-pref-cloudv4-desc = Create a token on the mineru.net API management page. Files are limited to 200 MB / 200 pages.
+agentparser-pref-tasks-desc = Local: run mineru-api (default http://127.0.0.1:8000) and enter the API key if you started it with --api-key. Cloud: use https://mineru.net/api with your API key.
+agentparser-pref-url = URL:
+agentparser-pref-token = API token:
+agentparser-pref-api-key = API key:
+agentparser-pref-model-version = Model version:
+agentparser-pref-language = Document language:
+agentparser-pref-tier = Tier:
+agentparser-tier-default =
+    .label = Server default
+agentparser-pref-url-hosts = Submit by URL for:
+agentparser-pref-url-hosts-desc = PDFs saved from these hosts (comma-separated, including subdomains) are submitted to MinerU by URL instead of being uploaded. If the URL doesn't work or serves a different file, the local file is uploaded instead.
+agentparser-pref-ocr-mode = OCR mode:
+agentparser-pref-force-ocr =
+    .label = Force OCR
+agentparser-pref-formula =
+    .label = Recognize formulas
+agentparser-pref-table =
+    .label = Recognize tables
+agentparser-pref-test =
+    .label = Test Connection
+
+agentparser-pref-output = Output
+agentparser-pref-output-desc = Results are saved in the attachment's storage directory (storage/<attachment key>/<folder name>/) and contain only full.md and images/. The YAML front matter in full.md records the title, authors, DOI, Zotero link and a hash of the source PDF. WebDAV file sync uploads the whole directory; Zotero Storage only uploads the PDF itself.
+agentparser-pref-dir-name = Output folder name:
+agentparser-pref-success-tag = Tag to add after parsing:
+agentparser-pref-mark-sync =
+    .label = Mark the attachment for upload after parsing so WebDAV syncs the results to other computers
+
+agentparser-pref-queue = Queue
+agentparser-pref-queue-status = { $queued } queued, { $running } running{ $details }
+agentparser-pref-clear-queue =
+    .label = Clear Queue
