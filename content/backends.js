@@ -1,4 +1,4 @@
-/* global Zotero, AgentParserHTTP, AgentParserOutput, AgentParserLocal */
+/* global Zotero, AgentParserHTTP, AgentParserOutput */
 
 /**
  * Parsing backends
@@ -30,7 +30,8 @@ var AgentParserBackends = {
 	classFor(name) {
 		switch (name) {
 			case 'local':
-				return AgentParserBackends.Local;
+				// Not included in the lite (cloud-only) edition
+				return AgentParserBackends.Local || null;
 			case 'cloudV4':
 				return AgentParserBackends.CloudV4;
 			default:
@@ -209,45 +210,6 @@ AgentParserBackends.Tasks = class {
 		if (!task || typeof task.task_id != 'string' || !Array.isArray(task.files) || task.files.length != 1) {
 			throw new Error("Unexpected response from MinerU Tasks API: "
 				+ JSON.stringify(task).substr(0, 300));
-		}
-	}
-};
-
-
-/**
- * Local MinerU via the Tasks API
- *
- * By default the plugin manages the server itself (see local.js) and starts it on demand. It can
- * also point at a server the user runs, on this computer or elsewhere.
- */
-AgentParserBackends.Local = class extends AgentParserBackends.Tasks {
-	constructor(getPref) {
-		super({
-			url: AgentParserLocal.getBaseURL(),
-			apiKey: AgentParserLocal.isManaged() ? '' : getPref('local.apiKey'),
-			tier: AgentParserLocal.getTier(),
-			ocrMode: getPref('local.ocrMode'),
-		});
-		this.serviceName = 'mineru-local';
-	}
-	
-	async test() {
-		await AgentParserLocal.acquire();
-		try {
-			return await super.test();
-		}
-		finally {
-			AgentParserLocal.release();
-		}
-	}
-	
-	async parse(job) {
-		await AgentParserLocal.acquire(status => job.onStatus(status));
-		try {
-			return await super.parse(job);
-		}
-		finally {
-			AgentParserLocal.release();
 		}
 	}
 };

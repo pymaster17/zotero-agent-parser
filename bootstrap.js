@@ -2,6 +2,7 @@
 
 var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 var AgentParser;
+var AgentParserEdition;
 
 // fetch, TextEncoder, etc. are already provided by the plugin sandbox, but not AbortController
 for (let prop of ["fetch", "AbortController"]) {
@@ -14,9 +15,13 @@ for (let prop of ["fetch", "AbortController"]) {
 function install() {}
 
 async function startup({ id, version, rootURI }) {
+	Services.scriptloader.loadSubScript(rootURI + 'content/edition.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/http.js');
-	Services.scriptloader.loadSubScript(rootURI + 'content/local.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/backends.js');
+	// The lite edition is cloud-only and doesn't ship local MinerU support
+	if (AgentParserEdition == 'full') {
+		Services.scriptloader.loadSubScript(rootURI + 'content/local.js');
+	}
 	Services.scriptloader.loadSubScript(rootURI + 'content/output.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/main.js');
 

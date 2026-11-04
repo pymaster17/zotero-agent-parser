@@ -26,8 +26,9 @@ AgentParser = {
 		this.rootURI = rootURI;
 		this._l10n = typeof Localization != 'undefined' ? new Localization([this.FTL]) : null;
 		this._notifierID = Zotero.Notifier.registerObserver(this, ['item'], 'agentParser');
-		AgentParserLocal.init(name => this.getPref(name));
-		this.local = AgentParserLocal;
+		// Only in the full edition
+		this.local = typeof AgentParserLocal != 'undefined' ? AgentParserLocal : null;
+		this.local?.init(name => this.getPref(name));
 		// Let the preferences pane and other code reach us
 		Zotero.AgentParser = this;
 	},
@@ -42,7 +43,7 @@ AgentParser = {
 		for (let win of Zotero.getMainWindows()) {
 			this.removeFromWindow(win);
 		}
-		AgentParserLocal.shutdown().catch(e => Zotero.logError(e));
+		this.local?.shutdown().catch(e => Zotero.logError(e));
 		// Leave the persisted queue in place so pending and running jobs resume on next startup
 		delete Zotero.AgentParser;
 	},
@@ -70,7 +71,7 @@ AgentParser = {
 	
 	
 	getDefaultBackend() {
-		return this.getPref('mode') == 'local' ? 'local' : 'cloudV4';
+		return this.local && this.getPref('mode') == 'local' ? 'local' : 'cloudV4';
 	},
 	
 	
@@ -87,7 +88,7 @@ AgentParser = {
 	 * a service explicitly.
 	 */
 	getBackendFor(entry) {
-		if (entry.backend) {
+		if (entry.backend && AgentParserBackends.classFor(entry.backend)) {
 			return entry.backend;
 		}
 		let name = this.getDefaultBackend();
@@ -216,7 +217,7 @@ AgentParser = {
 					force: !!entry.force,
 					waitForFile: false,
 					bulk: !!entry.bulk,
-					backend: ['cloudV4', 'local'].includes(entry.backend) ? entry.backend : null
+					backend: AgentParserBackends.classFor(entry.backend) ? entry.backend : null
 				});
 			}
 		}
@@ -751,10 +752,15 @@ AgentParser = {
 			let sep = doc.createXULElement('menuseparator');
 			let parse = makeItem('agentparser-menu-parse', () => this.parseSelected(win, false));
 			let reparse = makeItem('agentparser-menu-reparse', () => this.parseSelected(win, true));
-			let parseCloud = makeItem('agentparser-menu-parse-cloud', () => this.parseSelected(win, true, 'cloudV4'));
-			let parseLocal = makeItem('agentparser-menu-parse-local', () => this.parseSelected(win, true, 'local'));
 			let reveal = makeItem('agentparser-menu-reveal', () => this.revealSelected(win));
-			let added = [sep, parse, reparse, parseCloud, parseLocal, reveal];
+			let added = [sep, parse, reparse];
+			if (this.local) {
+				added.push(
+					makeItem('agentparser-menu-parse-cloud', () => this.parseSelected(win, true, 'cloudV4')),
+					makeItem('agentparser-menu-parse-local', () => this.parseSelected(win, true, 'local'))
+				);
+			}
+			added.push(reveal);
 			itemMenu.append(...added);
 			elements.push(...added);
 

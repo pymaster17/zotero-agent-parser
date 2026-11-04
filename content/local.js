@@ -1,6 +1,8 @@
-/* global Zotero, Services, ChromeUtils, Components, AgentParserHTTP */
+/* global Zotero, Services, ChromeUtils, Components, AgentParserHTTP, AgentParserBackends */
 
 /**
+ * Local MinerU support, left out of the lite (cloud-only) edition
+ *
  * Plugin-managed local MinerU: Python environment, model download and `mineru-kit api-server`
  *
  * The environment is a virtualenv created with uv (or `python3 -m venv` if uv isn't installed).
@@ -640,5 +642,44 @@ var AgentParserLocal = {
 			this._log.splice(0, this._log.length - this.LOG_LINES);
 		}
 		Zotero.debug('Agent Parser [MinerU]: ' + line, 5);
+	}
+};
+
+
+/**
+ * Local MinerU via the Tasks API
+ *
+ * By default the plugin manages the server itself (see local.js) and starts it on demand. It can
+ * also point at a server the user runs, on this computer or elsewhere.
+ */
+AgentParserBackends.Local = class extends AgentParserBackends.Tasks {
+	constructor(getPref) {
+		super({
+			url: AgentParserLocal.getBaseURL(),
+			apiKey: AgentParserLocal.isManaged() ? '' : getPref('local.apiKey'),
+			tier: AgentParserLocal.getTier(),
+			ocrMode: getPref('local.ocrMode'),
+		});
+		this.serviceName = 'mineru-local';
+	}
+	
+	async test() {
+		await AgentParserLocal.acquire();
+		try {
+			return await super.test();
+		}
+		finally {
+			AgentParserLocal.release();
+		}
+	}
+	
+	async parse(job) {
+		await AgentParserLocal.acquire(status => job.onStatus(status));
+		try {
+			return await super.parse(job);
+		}
+		finally {
+			AgentParserLocal.release();
+		}
 	}
 };
