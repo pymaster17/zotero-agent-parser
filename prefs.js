@@ -13,13 +13,26 @@ pref("extensions.agentparser.outputDirName", "parsed");
 pref("extensions.agentparser.markForSync", true);
 pref("extensions.agentparser.successTag", "");
 
-// Backend: "tasks" (MinerU >= 4 Tasks API, local or cloud) or "cloudV4" (mineru.net v4 batch API)
-pref("extensions.agentparser.backend", "cloudV4");
+// Default service: "cloud" (mineru.net v4 API) or "local" (MinerU on this computer)
+pref("extensions.agentparser.mode", "cloud");
+// In local mode, send large requests (whole library, multiple items) to the cloud batch API
+pref("extensions.agentparser.bulkUseCloud", true);
 
-pref("extensions.agentparser.tasks.url", "http://127.0.0.1:8000");
-pref("extensions.agentparser.tasks.apiKey", "");
-pref("extensions.agentparser.tasks.tier", "");
-pref("extensions.agentparser.tasks.ocrMode", "auto");
+// Local MinerU. When managed, the plugin installs MinerU into envDir and runs the server itself.
+pref("extensions.agentparser.local.managed", true);
+pref("extensions.agentparser.local.tier", "standard");
+pref("extensions.agentparser.local.ocrMode", "auto");
+pref("extensions.agentparser.local.port", "8000");
+pref("extensions.agentparser.local.idleStopMinutes", "15");
+// Empty means ~/.zotero-agent-parser/mineru-env
+pref("extensions.agentparser.local.envDir", "");
+// Empty means search PATH and the usual install locations
+pref("extensions.agentparser.local.uvPath", "");
+// "auto", "huggingface" or "modelscope"
+pref("extensions.agentparser.local.modelSource", "auto");
+// Server run by the user, when not managed
+pref("extensions.agentparser.local.url", "http://127.0.0.1:8000");
+pref("extensions.agentparser.local.apiKey", "");
 
 pref("extensions.agentparser.cloudV4.url", "https://mineru.net/api/v4");
 pref("extensions.agentparser.cloudV4.token", "");

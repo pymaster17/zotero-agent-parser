@@ -1,4 +1,4 @@
-/* global Zotero, AgentParserBackends, AgentParserOutput, Localization */
+/* global Zotero, AgentParserBackends, AgentParserOutput, AgentParserLocal, Localization */
 
 AgentParser = {
 	PREF_PREFIX: 'extensions.agentparser.',
@@ -26,6 +26,8 @@ AgentParser = {
 		this.rootURI = rootURI;
 		this._l10n = typeof Localization != 'undefined' ? new Localization([this.FTL]) : null;
 		this._notifierID = Zotero.Notifier.registerObserver(this, ['item'], 'agentParser');
+		AgentParserLocal.init(name => this.getPref(name));
+		this.local = AgentParserLocal;
 		// Let the preferences pane and other code reach us
 		Zotero.AgentParser = this;
 	},
@@ -40,6 +42,7 @@ AgentParser = {
 		for (let win of Zotero.getMainWindows()) {
 			this.removeFromWindow(win);
 		}
+		AgentParserLocal.shutdown().catch(e => Zotero.logError(e));
 		// Leave the persisted queue in place so pending and running jobs resume on next startup
 		delete Zotero.AgentParser;
 	},
@@ -63,6 +66,35 @@ AgentParser = {
 
 	createBackend(name) {
 		return AgentParserBackends.create(name, prefName => this.getPref(prefName));
+	},
+	
+	
+	getDefaultBackend() {
+		return this.getPref('mode') == 'local' ? 'local' : 'cloudV4';
+	},
+	
+	
+	hasCloudToken() {
+		return !!(this.getPref('cloudV4.token') || '').trim();
+	},
+	
+	
+	/**
+	 * Pick the service for a queue entry
+	 *
+	 * Local parsing takes about a minute per paper on Apple Silicon, so large requests (e.g., the
+	 * whole library) go to the cloud batch API when a token is configured, unless the user chose
+	 * a service explicitly.
+	 */
+	getBackendFor(entry) {
+		if (entry.backend) {
+			return entry.backend;
+		}
+		let name = this.getDefaultBackend();
+		if (name == 'local' && entry.bulk && this.getPref('bulkUseCloud') && this.hasCloudToken()) {
+			return 'cloudV4';
+		}
+		return name;
 	},
 
 
@@ -148,8 +180,9 @@ AgentParser = {
 	 * @param {Boolean} [options.waitForFile] - Wait for the file to finish downloading
 	 * @param {Boolean} [options.bulk] - Part of a large request (e.g., the whole library), which
 	 *     backends that support it process in batches
+	 * @param {String} [options.backend] - 'cloudV4' or 'local' instead of the default service
 	 */
-	enqueue(attachment, { force = false, waitForFile = false, bulk = false } = {}) {
+	enqueue(attachment, { force = false, waitForFile = false, bulk = false, backend = null } = {}) {
 		let key = attachment.libraryKey;
 		if (this._running.has(key)) {
 			return false;
@@ -157,10 +190,11 @@ AgentParser = {
 		let existing = this._queue.find(x => x.key == key);
 		if (existing) {
 			existing.force = existing.force || force;
+			existing.backend = backend || existing.backend;
 			this._persistQueue();
 			return false;
 		}
-		this._queue.push({ key, force, waitForFile, bulk });
+		this._queue.push({ key, force, waitForFile, bulk, backend });
 		this._persistQueue();
 		this._schedulePump();
 		return true;
@@ -181,7 +215,8 @@ AgentParser = {
 					key: entry.key,
 					force: !!entry.force,
 					waitForFile: false,
-					bulk: !!entry.bulk
+					bulk: !!entry.bulk,
+					backend: ['cloudV4', 'local'].includes(entry.backend) ? entry.backend : null
 				});
 			}
 		}
@@ -195,7 +230,7 @@ AgentParser = {
 	getStatus() {
 		return {
 			queued: this._queue.length,
-			running: [...this._running.values()].map(x => ({ key: x.key, status: x.status }))
+			running: [...this._running.values()].map(x => ({ key: x.key, status: x.status, service: x.service }))
 		};
 	},
 	
@@ -211,18 +246,13 @@ AgentParser = {
 			return;
 		}
 		let entries = [...this._running.values(), ...this._queue]
-			.map(x => ({ key: x.key, force: x.force, bulk: x.bulk }));
+			.map(x => ({ key: x.key, force: x.force, bulk: x.bulk, backend: x.backend || null }));
 		this.setPref('queue', JSON.stringify(entries));
 	},
 	
 	
-	_supportsBatch() {
-		try {
-			return typeof this.createBackend(this.getPref('backend')).parseBatch == 'function';
-		}
-		catch (e) {
-			return false;
-		}
+	_supportsBatch(name) {
+		return typeof AgentParserBackends.classFor(name)?.prototype.parseBatch == 'function';
 	},
 	
 	
@@ -246,20 +276,21 @@ AgentParser = {
 		if (this._shuttingDown) {
 			return;
 		}
-		let batchable = this._supportsBatch();
+		let batched = x => x.bulk && this._supportsBatch(this.getBackendFor(x));
 		
 		// One batch at a time, alongside regular jobs, so that newly added items don't wait for a
 		// whole library to finish
-		if (batchable && !this._batchRunning && this._queue.some(x => x.bulk)) {
+		if (!this._batchRunning && this._queue.some(batched)) {
+			let backend = this.getBackendFor(this._queue.find(batched));
 			let entries = [];
 			this._queue = this._queue.filter((x) => {
-				if (x.bulk && entries.length < this.BATCH_SIZE) {
+				if (batched(x) && this.getBackendFor(x) == backend && entries.length < this.BATCH_SIZE) {
 					entries.push(x);
 					return false;
 				}
 				return true;
 			});
-			let jobs = entries.map(x => ({ ...x, status: 'starting', inBatch: true }));
+			let jobs = entries.map(x => ({ ...x, service: backend, status: 'starting', inBatch: true }));
 			for (let job of jobs) {
 				this._running.set(job.key, job);
 			}
@@ -277,15 +308,20 @@ AgentParser = {
 				});
 		}
 		
-		let concurrency = Math.max(1, this._getIntPref('concurrency', 1));
-		let singles = () => [...this._running.values()].filter(x => !x.inBatch).length;
-		while (singles() < concurrency) {
-			let index = this._queue.findIndex(x => !x.bulk || !batchable);
+		// The local server handles one task at a time
+		let capacity = name => (name == 'local' ? 1 : Math.max(1, this._getIntPref('concurrency', 1)));
+		let running = name => [...this._running.values()].filter(x => !x.inBatch && x.service == name).length;
+		while (true) {
+			let index = this._queue.findIndex((x) => {
+				let name = this.getBackendFor(x);
+				return !batched(x) && running(name) < capacity(name);
+			});
 			if (index == -1) {
 				break;
 			}
 			let [entry] = this._queue.splice(index, 1);
-			let job = { ...entry, status: 'starting' };
+			// `backend` is an explicit choice that's persisted, `service` is what the job actually uses
+			let job = { ...entry, service: this.getBackendFor(entry), status: 'starting' };
 			this._running.set(entry.key, job);
 			this._persistQueue();
 			this._process(job)
@@ -318,7 +354,7 @@ AgentParser = {
 			return;
 		}
 		try {
-			let backendName = this.getPref('backend');
+			let backendName = job.service;
 			Zotero.debug(`Agent Parser: Parsing ${job.key} (${ctx.filePath}) with ${backendName}`);
 			let parser = await this.createBackend(backendName).parse({
 				...ctx.backendJob,
@@ -368,7 +404,7 @@ AgentParser = {
 		try {
 			if (ctxs.length) {
 				Zotero.debug(`Agent Parser: Parsing batch of ${ctxs.length} file(s)`);
-				await this.createBackend(this.getPref('backend')).parseBatch({
+				await this.createBackend(jobs[0].service).parseBatch({
 					jobs: ctxs.map(ctx => ctx.backendJob),
 					pollInterval: this._getPollInterval(),
 					timeout: this._getTimeout(),
@@ -606,12 +642,17 @@ AgentParser = {
 	//
 	// Actions
 	//
-	async parseSelected(win, force) {
+	/**
+	 * @param {Window} win
+	 * @param {Boolean} force
+	 * @param {String} [backend] - Service to use instead of the default
+	 */
+	async parseSelected(win, force, backend = null) {
 		let attachments = this.getParsableAttachments(win.ZoteroPane.getSelectedItems());
 		let bulk = attachments.length > 1;
 		let count = 0;
 		for (let attachment of attachments) {
-			if (this.enqueue(attachment, { force, bulk })) {
+			if (this.enqueue(attachment, { force, bulk, backend })) {
 				count++;
 			}
 		}
@@ -659,7 +700,11 @@ AgentParser = {
 			win.alert(await this.getString('agentparser-alert-library-done'));
 			return;
 		}
-		let ok = win.confirm(await this.getString('agentparser-confirm-library', { count: missing.length }));
+		let service = this.getBackendFor({ bulk: true });
+		let ok = win.confirm(await this.getString(
+			service == 'local' ? 'agentparser-confirm-library-local' : 'agentparser-confirm-library',
+			{ count: missing.length }
+		));
 		if (!ok) {
 			return;
 		}
@@ -706,8 +751,10 @@ AgentParser = {
 			let sep = doc.createXULElement('menuseparator');
 			let parse = makeItem('agentparser-menu-parse', () => this.parseSelected(win, false));
 			let reparse = makeItem('agentparser-menu-reparse', () => this.parseSelected(win, true));
+			let parseCloud = makeItem('agentparser-menu-parse-cloud', () => this.parseSelected(win, true, 'cloudV4'));
+			let parseLocal = makeItem('agentparser-menu-parse-local', () => this.parseSelected(win, true, 'local'));
 			let reveal = makeItem('agentparser-menu-reveal', () => this.revealSelected(win));
-			let added = [sep, parse, reparse, reveal];
+			let added = [sep, parse, reparse, parseCloud, parseLocal, reveal];
 			itemMenu.append(...added);
 			elements.push(...added);
 
