@@ -15,6 +15,7 @@ function install() {}
 
 async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + 'content/http.js');
+	Services.scriptloader.loadSubScript(rootURI + 'content/local.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/backends.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/output.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/main.js');
@@ -23,6 +24,7 @@ async function startup({ id, version, rootURI }) {
 
 	Zotero.PreferencePanes.register({
 		pluginID: id,
+		id: 'agent-parser-prefs',
 		src: rootURI + 'content/preferences.xhtml',
 		scripts: [rootURI + 'content/preferences.js'],
 	});

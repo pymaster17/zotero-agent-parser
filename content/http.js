@@ -17,6 +17,7 @@ var AgentParserHTTP = {
 	 * @param {*} [options.body]
 	 * @param {Number} [options.timeout] - Milliseconds
 	 * @param {Boolean} [options.allowErrorStatus] - Return the response instead of throwing on >= 400
+	 * @param {Boolean} [options.quiet] - Don't log the request (e.g., for health checks)
 	 * @return {Promise<Response>}
 	 */
 	async request(method, url, options = {}) {
@@ -30,7 +31,9 @@ var AgentParserHTTP = {
 			}, timeout);
 		});
 
-		Zotero.debug(`Agent Parser: ${method} ${this.displayURL(url)}`);
+		if (!options.quiet) {
+			Zotero.debug(`Agent Parser: ${method} ${this.displayURL(url)}`);
+		}
 		let response;
 		try {
 			response = await Promise.race([
