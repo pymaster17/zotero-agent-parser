@@ -4,15 +4,159 @@
 
 <vbox id="agentparser-prefpane" class="main-section" onload="AgentParserPrefs.init()">
 	<groupbox>
+		<label><html:h2 data-l10n-id="agentparser-pref-mode"/></label>
+		<radiogroup id="agentparser-mode" preference="extensions.agentparser.mode"
+			oncommand="AgentParserPrefs.update()">
+			<radio value="cloud" data-l10n-id="agentparser-mode-cloud"/>
+			<radio value="local" data-l10n-id="agentparser-mode-local"/>
+		</radiogroup>
+		<description data-l10n-id="agentparser-pref-mode-desc"/>
+		<checkbox id="agentparser-bulk-cloud" preference="extensions.agentparser.bulkUseCloud"
+			data-l10n-id="agentparser-pref-bulk-cloud" native="true"
+			oncommand="AgentParserPrefs.update()"/>
+		<html:span id="agentparser-mode-warning" style="color: var(--accent-red, #d70022)" hidden="hidden"/>
+	</groupbox>
+
+	<!-- mineru.net v4 -->
+	<groupbox>
+		<label><html:h2 data-l10n-id="agentparser-pref-cloud"/></label>
+		<description data-l10n-id="agentparser-pref-cloud-desc"/>
+		<grid class="form-grid">
+			<html:label for="agentparser-cloudv4-token" data-l10n-id="agentparser-pref-token"/>
+			<html:input id="agentparser-cloudv4-token" type="password" style="flex: 1"
+				preference="extensions.agentparser.cloudV4.token"
+				oninput="AgentParserPrefs.update()"/>
+			<html:label for="agentparser-cloudv4-model" data-l10n-id="agentparser-pref-model-version"/>
+			<menulist id="agentparser-cloudv4-model" preference="extensions.agentparser.cloudV4.modelVersion" native="true">
+				<menupopup>
+					<menuitem value="vlm" label="vlm"/>
+					<menuitem value="pipeline" label="pipeline"/>
+				</menupopup>
+			</menulist>
+			<html:label for="agentparser-cloudv4-lang" data-l10n-id="agentparser-pref-language"/>
+			<html:input id="agentparser-cloudv4-lang" style="width: 8em"
+				preference="extensions.agentparser.cloudV4.language"/>
+			<html:label for="agentparser-cloudv4-hosts" data-l10n-id="agentparser-pref-url-hosts"/>
+			<html:input id="agentparser-cloudv4-hosts" style="flex: 1"
+				preference="extensions.agentparser.cloudV4.urlHosts"/>
+			<html:label for="agentparser-concurrency" data-l10n-id="agentparser-pref-concurrency"/>
+			<html:input id="agentparser-concurrency" type="number" min="1" max="8" style="width: 5em"
+				preference="extensions.agentparser.concurrency"/>
+			<html:label for="agentparser-cloudv4-url" data-l10n-id="agentparser-pref-url"/>
+			<html:input id="agentparser-cloudv4-url" style="flex: 1"
+				preference="extensions.agentparser.cloudV4.url"/>
+		</grid>
+		<description data-l10n-id="agentparser-pref-url-hosts-desc"/>
+		<checkbox preference="extensions.agentparser.cloudV4.isOCR" data-l10n-id="agentparser-pref-force-ocr" native="true"/>
+		<checkbox preference="extensions.agentparser.cloudV4.enableFormula" data-l10n-id="agentparser-pref-formula" native="true"/>
+		<checkbox preference="extensions.agentparser.cloudV4.enableTable" data-l10n-id="agentparser-pref-table" native="true"/>
+		<hbox align="center">
+			<button id="agentparser-test-cloudV4" data-l10n-id="agentparser-pref-test"
+				oncommand="AgentParserPrefs.test('cloudV4')"/>
+			<label id="agentparser-test-result-cloudV4" flex="1" crop="end"/>
+		</hbox>
+	</groupbox>
+
+	<!-- Local MinerU -->
+	<groupbox>
+		<label><html:h2 data-l10n-id="agentparser-pref-local"/></label>
+		<grid class="form-grid">
+			<html:label for="agentparser-local-tier" data-l10n-id="agentparser-pref-tier"/>
+			<menulist id="agentparser-local-tier" preference="extensions.agentparser.local.tier" native="true"
+				oncommand="AgentParserPrefs.update({ refresh: true })">
+				<menupopup>
+					<menuitem value="basic" data-l10n-id="agentparser-tier-basic"/>
+					<menuitem value="standard" data-l10n-id="agentparser-tier-standard"/>
+					<menuitem value="advanced" data-l10n-id="agentparser-tier-advanced"/>
+				</menupopup>
+			</menulist>
+			<html:label for="agentparser-local-ocr" data-l10n-id="agentparser-pref-ocr-mode"/>
+			<menulist id="agentparser-local-ocr" preference="extensions.agentparser.local.ocrMode" native="true">
+				<menupopup>
+					<menuitem value="auto" label="auto"/>
+					<menuitem value="txt" label="txt"/>
+					<menuitem value="ocr" label="ocr"/>
+				</menupopup>
+			</menulist>
+		</grid>
+		<html:span id="agentparser-tier-desc"/>
+
+		<checkbox id="agentparser-local-managed" preference="extensions.agentparser.local.managed"
+			data-l10n-id="agentparser-pref-managed" native="true"
+			oncommand="AgentParserPrefs.update({ refresh: true })"/>
+
+		<!-- Plugin-managed install -->
+		<vbox id="agentparser-local-managed-section">
+			<grid class="form-grid">
+				<html:label data-l10n-id="agentparser-local-env"/>
+				<html:span id="agentparser-local-env-status"/>
+				<html:label data-l10n-id="agentparser-local-models"/>
+				<html:span id="agentparser-local-models-status"/>
+				<html:label data-l10n-id="agentparser-local-server"/>
+				<html:span id="agentparser-local-server-status"/>
+			</grid>
+			<hbox align="center">
+				<button id="agentparser-local-install" data-l10n-id="agentparser-local-install"
+					oncommand="AgentParserPrefs.install()"/>
+				<button id="agentparser-local-cancel" data-l10n-id="agentparser-local-cancel"
+					oncommand="AgentParserPrefs.cancelInstall()"/>
+				<button id="agentparser-local-start" data-l10n-id="agentparser-local-start"
+					oncommand="AgentParserPrefs.test('local')"/>
+				<button id="agentparser-local-stop" data-l10n-id="agentparser-local-stop"
+					oncommand="AgentParserPrefs.stopServer()"/>
+			</hbox>
+			<html:textarea id="agentparser-local-log" readonly="readonly" rows="8"
+				style="font-family: monospace; font-size: 11px; white-space: pre; resize: vertical;"/>
+			<grid class="form-grid">
+				<html:label for="agentparser-local-envdir" data-l10n-id="agentparser-pref-env-dir"/>
+				<html:input id="agentparser-local-envdir" style="flex: 1"
+					preference="extensions.agentparser.local.envDir"
+					onchange="AgentParserPrefs.update({ refresh: true })"/>
+				<html:label for="agentparser-local-uv" data-l10n-id="agentparser-pref-uv-path"/>
+				<html:input id="agentparser-local-uv" style="flex: 1"
+					preference="extensions.agentparser.local.uvPath"/>
+				<html:label for="agentparser-local-source" data-l10n-id="agentparser-pref-model-source"/>
+				<menulist id="agentparser-local-source" preference="extensions.agentparser.local.modelSource" native="true">
+					<menupopup>
+						<menuitem value="auto" label="auto"/>
+						<menuitem value="huggingface" label="Hugging Face"/>
+						<menuitem value="modelscope" label="ModelScope"/>
+					</menupopup>
+				</menulist>
+				<html:label for="agentparser-local-port" data-l10n-id="agentparser-pref-port"/>
+				<html:input id="agentparser-local-port" type="number" min="1" max="65535" style="width: 6em"
+					preference="extensions.agentparser.local.port"/>
+				<html:label for="agentparser-local-idle" data-l10n-id="agentparser-pref-idle-stop"/>
+				<html:input id="agentparser-local-idle" type="number" min="0" style="width: 6em"
+					preference="extensions.agentparser.local.idleStopMinutes"/>
+			</grid>
+		</vbox>
+
+		<!-- Server run by the user -->
+		<vbox id="agentparser-local-external-section">
+			<description data-l10n-id="agentparser-pref-external-desc"/>
+			<grid class="form-grid">
+				<html:label for="agentparser-local-url" data-l10n-id="agentparser-pref-url"/>
+				<html:input id="agentparser-local-url" style="flex: 1"
+					preference="extensions.agentparser.local.url"/>
+				<html:label for="agentparser-local-key" data-l10n-id="agentparser-pref-api-key"/>
+				<html:input id="agentparser-local-key" type="password" style="flex: 1"
+					preference="extensions.agentparser.local.apiKey"/>
+			</grid>
+			<hbox align="center">
+				<button data-l10n-id="agentparser-pref-test" oncommand="AgentParserPrefs.test('local')"/>
+			</hbox>
+		</vbox>
+		<label id="agentparser-test-result-local" crop="end"/>
+	</groupbox>
+
+	<groupbox>
 		<label><html:h2 data-l10n-id="agentparser-pref-general"/></label>
 		<checkbox preference="extensions.agentparser.autoParse" data-l10n-id="agentparser-pref-auto-parse" native="true"/>
 		<checkbox preference="extensions.agentparser.skipSyncedItems" data-l10n-id="agentparser-pref-skip-synced" native="true"/>
 		<checkbox preference="extensions.agentparser.includeLinkedFiles" data-l10n-id="agentparser-pref-include-linked" native="true"/>
 		<checkbox preference="extensions.agentparser.showNotifications" data-l10n-id="agentparser-pref-notifications" native="true"/>
 		<grid class="form-grid">
-			<html:label for="agentparser-concurrency" data-l10n-id="agentparser-pref-concurrency"/>
-			<html:input id="agentparser-concurrency" type="number" min="1" max="8" style="width: 5em"
-				preference="extensions.agentparser.concurrency"/>
 			<html:label for="agentparser-timeout" data-l10n-id="agentparser-pref-timeout"/>
 			<html:input id="agentparser-timeout" type="number" min="1" style="width: 5em"
 				preference="extensions.agentparser.timeoutMinutes"/>
@@ -20,86 +164,6 @@
 			<html:input id="agentparser-wait" type="number" min="0" style="width: 5em"
 				preference="extensions.agentparser.waitForFileMinutes"/>
 		</grid>
-	</groupbox>
-
-	<groupbox>
-		<label><html:h2 data-l10n-id="agentparser-pref-backend"/></label>
-		<grid class="form-grid">
-			<html:label for="agentparser-backend" data-l10n-id="agentparser-pref-backend-type"/>
-			<menulist id="agentparser-backend" preference="extensions.agentparser.backend" native="true"
-				oncommand="AgentParserPrefs.updateSections()">
-				<menupopup>
-					<menuitem value="cloudV4" data-l10n-id="agentparser-backend-cloudv4"/>
-					<menuitem value="tasks" data-l10n-id="agentparser-backend-tasks"/>
-				</menupopup>
-			</menulist>
-		</grid>
-
-		<!-- mineru.net v4 -->
-		<vbox id="agentparser-section-cloudV4" class="agentparser-section">
-			<description data-l10n-id="agentparser-pref-cloudv4-desc"/>
-			<grid class="form-grid">
-				<html:label for="agentparser-cloudv4-url" data-l10n-id="agentparser-pref-url"/>
-				<html:input id="agentparser-cloudv4-url" style="flex: 1"
-					preference="extensions.agentparser.cloudV4.url"/>
-				<html:label for="agentparser-cloudv4-token" data-l10n-id="agentparser-pref-token"/>
-				<html:input id="agentparser-cloudv4-token" type="password" style="flex: 1"
-					preference="extensions.agentparser.cloudV4.token"/>
-				<html:label for="agentparser-cloudv4-model" data-l10n-id="agentparser-pref-model-version"/>
-				<menulist id="agentparser-cloudv4-model" preference="extensions.agentparser.cloudV4.modelVersion" native="true">
-					<menupopup>
-						<menuitem value="vlm" label="vlm"/>
-						<menuitem value="pipeline" label="pipeline"/>
-					</menupopup>
-				</menulist>
-				<html:label for="agentparser-cloudv4-lang" data-l10n-id="agentparser-pref-language"/>
-				<html:input id="agentparser-cloudv4-lang" style="width: 8em"
-					preference="extensions.agentparser.cloudV4.language"/>
-				<html:label for="agentparser-cloudv4-hosts" data-l10n-id="agentparser-pref-url-hosts"/>
-				<html:input id="agentparser-cloudv4-hosts" style="flex: 1"
-					preference="extensions.agentparser.cloudV4.urlHosts"/>
-			</grid>
-			<checkbox preference="extensions.agentparser.cloudV4.isOCR" data-l10n-id="agentparser-pref-force-ocr" native="true"/>
-			<checkbox preference="extensions.agentparser.cloudV4.enableFormula" data-l10n-id="agentparser-pref-formula" native="true"/>
-			<checkbox preference="extensions.agentparser.cloudV4.enableTable" data-l10n-id="agentparser-pref-table" native="true"/>
-			<description data-l10n-id="agentparser-pref-url-hosts-desc"/>
-		</vbox>
-
-		<!-- MinerU >= 4 Tasks API -->
-		<vbox id="agentparser-section-tasks" class="agentparser-section">
-			<description data-l10n-id="agentparser-pref-tasks-desc"/>
-			<grid class="form-grid">
-				<html:label for="agentparser-tasks-url" data-l10n-id="agentparser-pref-url"/>
-				<html:input id="agentparser-tasks-url" style="flex: 1"
-					preference="extensions.agentparser.tasks.url"/>
-				<html:label for="agentparser-tasks-key" data-l10n-id="agentparser-pref-api-key"/>
-				<html:input id="agentparser-tasks-key" type="password" style="flex: 1"
-					preference="extensions.agentparser.tasks.apiKey"/>
-				<html:label for="agentparser-tasks-tier" data-l10n-id="agentparser-pref-tier"/>
-				<menulist id="agentparser-tasks-tier" preference="extensions.agentparser.tasks.tier" native="true">
-					<menupopup>
-						<menuitem value="" data-l10n-id="agentparser-tier-default"/>
-						<menuitem value="flash" label="flash"/>
-						<menuitem value="basic" label="basic"/>
-						<menuitem value="standard" label="standard"/>
-						<menuitem value="advanced" label="advanced"/>
-					</menupopup>
-				</menulist>
-				<html:label for="agentparser-tasks-ocr" data-l10n-id="agentparser-pref-ocr-mode"/>
-				<menulist id="agentparser-tasks-ocr" preference="extensions.agentparser.tasks.ocrMode" native="true">
-					<menupopup>
-						<menuitem value="auto" label="auto"/>
-						<menuitem value="txt" label="txt"/>
-						<menuitem value="ocr" label="ocr"/>
-					</menupopup>
-				</menulist>
-			</grid>
-		</vbox>
-		
-		<hbox align="center">
-			<button id="agentparser-test" data-l10n-id="agentparser-pref-test" oncommand="AgentParserPrefs.test()"/>
-			<label id="agentparser-test-result" flex="1" crop="end"/>
-		</hbox>
 	</groupbox>
 
 	<groupbox>
