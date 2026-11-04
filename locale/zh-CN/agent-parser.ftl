@@ -32,10 +32,12 @@ agentparser-pref-mode-desc = 新条目使用这里选择的方式解析。也可
 agentparser-pref-bulk-cloud =
     .label = 本地模式下，大批量请求（整库解析、多选条目）使用云端批处理接口
 agentparser-warn-no-token = 请在下方填写云端 API Token，或改用本地解析。
+agentparser-warn-no-token-lite = 请在下方填写云端 API Token 后开始解析。
 agentparser-warn-bulk-no-token = 未配置云端 API Token，大批量请求也将在本地解析。
 
 agentparser-pref-cloud = 云端
 agentparser-pref-cloud-desc = 在 mineru.net 的 API 管理页面申请 Token。单个文件不超过 200 MB / 200 页。
+agentparser-pref-lite-desc = 当前是轻量版，只使用云端服务。如需在本机用 MinerU 解析，请改装完整版，现有设置会保留。
 agentparser-pref-token = API Token：
 agentparser-pref-model-version = 模型版本：
 agentparser-pref-language = 文档语言：

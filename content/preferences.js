@@ -37,6 +37,18 @@ window.AgentParserPrefs = {
 		if (!plugin) {
 			return;
 		}
+		let full = !!plugin.local;
+		for (let elem of document.querySelectorAll('.agentparser-full-only')) {
+			elem.hidden = !full;
+		}
+		for (let elem of document.querySelectorAll('.agentparser-lite-only')) {
+			elem.hidden = full;
+		}
+		this._updateWarning();
+		if (!full) {
+			return;
+		}
+		
 		let managed = !!plugin.getPref('local.managed');
 		document.getElementById('agentparser-local-managed-section').hidden = !managed;
 		document.getElementById('agentparser-local-external-section').hidden = managed;
@@ -44,11 +56,17 @@ window.AgentParserPrefs = {
 		let tier = plugin.local.getTier();
 		document.l10n.setAttributes(document.getElementById('agentparser-tier-desc'), 'agentparser-tier-desc-' + tier);
 
+		this.refreshLocal({ refresh });
+	},
+
+
+	_updateWarning() {
+		let plugin = this._plugin;
 		let warning = document.getElementById('agentparser-mode-warning');
 		let warningID = null;
 		if (!plugin.hasCloudToken()) {
-			if (plugin.getPref('mode') != 'local') {
-				warningID = 'agentparser-warn-no-token';
+			if (plugin.getDefaultBackend() != 'local') {
+				warningID = plugin.local ? 'agentparser-warn-no-token' : 'agentparser-warn-no-token-lite';
 			}
 			else if (plugin.getPref('bulkUseCloud')) {
 				warningID = 'agentparser-warn-bulk-no-token';
@@ -58,14 +76,12 @@ window.AgentParserPrefs = {
 		if (warningID) {
 			document.l10n.setAttributes(warning, warningID);
 		}
-
-		this.refreshLocal({ refresh });
 	},
 
 
 	async refreshLocal({ refresh = false } = {}) {
 		let plugin = this._plugin;
-		if (!plugin || this._refreshing) {
+		if (!plugin?.local || this._refreshing) {
 			return;
 		}
 		this._refreshing = true;
@@ -171,7 +187,7 @@ window.AgentParserPrefs = {
 		if (!plugin) {
 			return;
 		}
-		resultLabel.value = backend == 'local' && plugin.local.isManaged()
+		resultLabel.value = backend == 'local' && plugin.local?.isManaged()
 			? await plugin.getString('agentparser-local-starting-hint')
 			: '…';
 		try {

@@ -3,7 +3,7 @@
 </linkset>
 
 <vbox id="agentparser-prefpane" class="main-section" onload="AgentParserPrefs.init()">
-	<groupbox>
+	<groupbox class="agentparser-full-only">
 		<label><html:h2 data-l10n-id="agentparser-pref-mode"/></label>
 		<radiogroup id="agentparser-mode" preference="extensions.agentparser.mode"
 			oncommand="AgentParserPrefs.update()">
@@ -14,13 +14,14 @@
 		<checkbox id="agentparser-bulk-cloud" preference="extensions.agentparser.bulkUseCloud"
 			data-l10n-id="agentparser-pref-bulk-cloud" native="true"
 			oncommand="AgentParserPrefs.update()"/>
-		<html:span id="agentparser-mode-warning" style="color: var(--accent-red, #d70022)" hidden="hidden"/>
 	</groupbox>
 
 	<!-- mineru.net v4 -->
 	<groupbox>
 		<label><html:h2 data-l10n-id="agentparser-pref-cloud"/></label>
 		<description data-l10n-id="agentparser-pref-cloud-desc"/>
+		<description class="agentparser-lite-only" data-l10n-id="agentparser-pref-lite-desc"/>
+		<html:span id="agentparser-mode-warning" style="color: var(--accent-red, #d70022)" hidden="hidden"/>
 		<grid class="form-grid">
 			<html:label for="agentparser-cloudv4-token" data-l10n-id="agentparser-pref-token"/>
 			<html:input id="agentparser-cloudv4-token" type="password" style="flex: 1"
@@ -58,7 +59,7 @@
 	</groupbox>
 
 	<!-- Local MinerU -->
-	<groupbox>
+	<groupbox class="agentparser-full-only">
 		<label><html:h2 data-l10n-id="agentparser-pref-local"/></label>
 		<grid class="form-grid">
 			<html:label for="agentparser-local-tier" data-l10n-id="agentparser-pref-tier"/>

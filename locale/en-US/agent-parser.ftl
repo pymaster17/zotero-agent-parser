@@ -32,10 +32,12 @@ agentparser-pref-mode-desc = New items are parsed with the service chosen here. 
 agentparser-pref-bulk-cloud =
     .label = In local mode, parse large requests (whole library, multiple selected items) with the cloud batch API
 agentparser-warn-no-token = Enter a cloud API token below, or switch to local parsing.
+agentparser-warn-no-token-lite = Enter a cloud API token below to start parsing.
 agentparser-warn-bulk-no-token = No cloud API token is configured, so large requests will also be parsed locally.
 
 agentparser-pref-cloud = Cloud
 agentparser-pref-cloud-desc = Create a token on the mineru.net API management page. Files are limited to 200 MB / 200 pages.
+agentparser-pref-lite-desc = This is the lite edition, which only uses the cloud service. To parse on this computer with MinerU, install the full edition instead -- your settings carry over.
 agentparser-pref-token = API token:
 agentparser-pref-model-version = Model version:
 agentparser-pref-language = Document language:
