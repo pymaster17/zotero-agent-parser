@@ -3,6 +3,12 @@
 var AgentParserHTTP = {
 	DEFAULT_TIMEOUT: 120 * 1000,
 	UPLOAD_RETRY_DELAYS: [30 * 1000, 2 * 60 * 1000, 5 * 60 * 1000],
+	// A direct connection to a storage host this fast doesn't need the accelerated endpoint
+	ACCELERATE_DIRECT_MAX_MS: 300,
+	ACCELERATE_TIMEOUT: 10 * 60 * 1000,
+	// Per storage host: whether to use its accelerated endpoint (or a promise for it), decided
+	// once per session
+	_accelerate: new Map(),
 
 
 	/**
@@ -109,8 +115,31 @@ var AgentParserHTTP = {
 	 * (e.g., an expired presigned URL) aren't retried.
 	 *
 	 * @param {Function} getBody - Returns the request body, read again for each attempt
+	 * @param {Object} [options]
+	 * @param {String} [options.accelerate] - 'auto', 'always', or 'off' (default): whether to
+	 *     try the storage service's accelerated endpoint first. See acceleratedURL().
 	 */
 	async upload(url, getBody, options = {}) {
+		let fastURL = await this._chooseAcceleratedURL(url, options.accelerate);
+		if (fastURL) {
+			try {
+				return await this.request('PUT', fastURL, {
+					timeout: this.ACCELERATE_TIMEOUT,
+					...options,
+					body: await getBody()
+				});
+			}
+			catch (e) {
+				// A refusal (e.g., acceleration turned off for the bucket) will happen every time
+				if (e.status >= 400 && e.status < 500) {
+					this._accelerate.set(new URL(url).host, false);
+				}
+				Zotero.debug(`Agent Parser: Accelerated upload failed (${e.message}) -- `
+					+ `uploading to ${this.displayURL(url)} instead`);
+				options.checkCancelled?.();
+			}
+		}
+		
 		let delays = options.retryDelays || this.UPLOAD_RETRY_DELAYS;
 		for (let attempt = 0; ; attempt++) {
 			try {
@@ -130,6 +159,71 @@ var AgentParserHTTP = {
 				options.checkCancelled?.();
 			}
 		}
+	},
+
+
+	/**
+	 * Presigned Alibaba Cloud OSS URL on the bucket's transfer acceleration endpoint
+	 *
+	 * Uploads from outside mainland China to a bucket in China cross congested international
+	 * links and can crawl along at a few KB/s. The accelerated endpoint enters Alibaba's network
+	 * nearby instead. V1 signatures don't cover the host, so the same presigned URL works there,
+	 * as long as the bucket has acceleration turned on.
+	 *
+	 * @return {String|null} - Null if the URL isn't a V1-signed OSS URL on a regional endpoint
+	 */
+	acceleratedURL(url) {
+		let parsed;
+		try {
+			parsed = new URL(url);
+		}
+		catch (e) {
+			return null;
+		}
+		let match = parsed.host.match(/^([a-z0-9][a-z0-9-]*)\.oss-([a-z0-9-]+)\.aliyuncs\.com$/);
+		if (!match || match[2].startsWith('accelerate')
+				|| !parsed.searchParams.has('Signature') || parsed.searchParams.has('x-oss-signature-version')) {
+			return null;
+		}
+		parsed.host = `${match[1]}.oss-accelerate.aliyuncs.com`;
+		return parsed.href;
+	},
+
+
+	async _chooseAcceleratedURL(url, mode) {
+		let fastURL = mode == 'auto' || mode == 'always' ? this.acceleratedURL(url) : null;
+		if (!fastURL || mode == 'always') {
+			return fastURL;
+		}
+		let host = new URL(url).host;
+		// Store the promise, so that uploads starting together share one check
+		if (!this._accelerate.has(host)) {
+			this._accelerate.set(host, this._isFastHost(host).then((fast) => {
+				Zotero.debug(`Agent Parser: ${fast ? 'Not using' : 'Using'} accelerated uploads for ${host}`);
+				return !fast;
+			}));
+		}
+		return (await this._accelerate.get(host)) ? fastURL : null;
+	},
+
+
+	/**
+	 * Whether a request to the host's root (which storage services answer with an error right
+	 * away) completes quickly, including the TLS handshake
+	 */
+	async _isFastHost(host) {
+		let start = Date.now();
+		try {
+			await this.request('HEAD', `https://${host}/`, {
+				timeout: 10 * 1000,
+				allowErrorStatus: true,
+				quiet: true
+			});
+		}
+		catch (e) {
+			return false;
+		}
+		return Date.now() - start <= this.ACCELERATE_DIRECT_MAX_MS;
 	},
 
 

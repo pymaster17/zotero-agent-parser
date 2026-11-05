@@ -275,6 +275,7 @@ AgentParserBackends.CloudV4 = class {
 		this.enableFormula = !!getPref('cloudV4.enableFormula');
 		this.enableTable = !!getPref('cloudV4.enableTable');
 		this.language = getPref('cloudV4.language') || 'ch';
+		this.uploadAcceleration = getPref('cloudV4.uploadAcceleration') || 'auto';
 		this.urlHosts = (getPref('cloudV4.urlHosts') || '')
 			.split(/[\s,;]+/)
 			.map(x => x.trim().toLowerCase().replace(/^\*?\./, ''))
@@ -474,6 +475,7 @@ AgentParserBackends.CloudV4 = class {
 						batch.onStatus(job, 'uploading');
 						try {
 							await AgentParserHTTP.upload(url, () => AgentParserBackends.readFile(job.filePath), {
+								accelerate: this.uploadAcceleration,
 								checkCancelled
 							});
 							entry.submittedAt = Date.now();
@@ -738,6 +740,7 @@ AgentParserBackends.CloudV4 = class {
 		// Presigned URL -- must not send Content-Type or Authorization
 		job.onStatus('uploading');
 		await AgentParserHTTP.upload(uploadURL, () => AgentParserBackends.readFile(job.filePath), {
+			accelerate: this.uploadAcceleration,
 			checkCancelled: () => job.checkCancelled()
 		});
 		

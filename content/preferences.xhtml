@@ -40,6 +40,14 @@
 			<html:label for="agentparser-cloudv4-hosts" data-l10n-id="agentparser-pref-url-hosts"/>
 			<html:input id="agentparser-cloudv4-hosts" style="flex: 1"
 				preference="extensions.agentparser.cloudV4.urlHosts"/>
+			<html:label for="agentparser-cloudv4-accelerate" data-l10n-id="agentparser-pref-upload-acceleration"/>
+			<menulist id="agentparser-cloudv4-accelerate" preference="extensions.agentparser.cloudV4.uploadAcceleration" native="true">
+				<menupopup>
+					<menuitem value="auto" data-l10n-id="agentparser-upload-acceleration-auto"/>
+					<menuitem value="always" data-l10n-id="agentparser-upload-acceleration-always"/>
+					<menuitem value="off" data-l10n-id="agentparser-upload-acceleration-off"/>
+				</menupopup>
+			</menulist>
 			<html:label for="agentparser-concurrency" data-l10n-id="agentparser-pref-concurrency"/>
 			<html:input id="agentparser-concurrency" type="number" min="1" max="8" style="width: 5em"
 				preference="extensions.agentparser.concurrency"/>
@@ -48,6 +56,7 @@
 				preference="extensions.agentparser.cloudV4.url"/>
 		</grid>
 		<description data-l10n-id="agentparser-pref-url-hosts-desc"/>
+		<description data-l10n-id="agentparser-pref-upload-acceleration-desc"/>
 		<checkbox preference="extensions.agentparser.cloudV4.isOCR" data-l10n-id="agentparser-pref-force-ocr" native="true"/>
 		<checkbox preference="extensions.agentparser.cloudV4.enableFormula" data-l10n-id="agentparser-pref-formula" native="true"/>
 		<checkbox preference="extensions.agentparser.cloudV4.enableTable" data-l10n-id="agentparser-pref-table" native="true"/>
