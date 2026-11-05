@@ -2,6 +2,7 @@
 
 var AgentParserHTTP = {
 	DEFAULT_TIMEOUT: 120 * 1000,
+	UPLOAD_RETRY_DELAYS: [30 * 1000, 2 * 60 * 1000, 5 * 60 * 1000],
 
 
 	/**
@@ -27,7 +28,9 @@ var AgentParserHTTP = {
 		let timeoutPromise = new Promise((resolve, reject) => {
 			timer = setTimeout(() => {
 				controller?.abort();
-				reject(new Error(`${method} ${this.displayURL(url)} timed out after ${Math.round(timeout / 1000)}s`));
+				let err = new Error(`${method} ${this.displayURL(url)} timed out after ${Math.round(timeout / 1000)}s`);
+				err.isTimeout = true;
+				reject(err);
 			}, timeout);
 		});
 
@@ -51,7 +54,9 @@ var AgentParserHTTP = {
 		}
 		catch (e) {
 			if (e instanceof TypeError) {
-				throw new Error(`Could not connect to ${this.displayURL(url)}: ${e.message}`);
+				let err = new Error(`Could not connect to ${this.displayURL(url)}: ${e.message}`);
+				err.isNetworkError = true;
+				throw err;
 			}
 			throw e;
 		}
@@ -97,6 +102,37 @@ var AgentParserHTTP = {
 	},
 
 
+	/**
+	 * PUT a file, retrying if the connection drops
+	 *
+	 * Uploads to cloud storage can take a long time and occasionally get cut off. HTTP errors
+	 * (e.g., an expired presigned URL) aren't retried.
+	 *
+	 * @param {Function} getBody - Returns the request body, read again for each attempt
+	 */
+	async upload(url, getBody, options = {}) {
+		let delays = options.retryDelays || this.UPLOAD_RETRY_DELAYS;
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await this.request('PUT', url, {
+					timeout: 30 * 60 * 1000,
+					...options,
+					body: await getBody()
+				});
+			}
+			catch (e) {
+				if (!e.isNetworkError || attempt >= delays.length) {
+					throw e;
+				}
+				Zotero.debug(`Agent Parser: Upload to ${this.displayURL(url)} failed (${e.message}) -- `
+					+ `retrying in ${delays[attempt] / 1000}s`);
+				await this.sleep(delays[attempt]);
+				options.checkCancelled?.();
+			}
+		}
+	},
+
+
 	isSameOrigin(a, b) {
 		try {
 			return new URL(a).origin == new URL(b).origin;
@@ -112,6 +148,14 @@ var AgentParserHTTP = {
 	 */
 	displayURL(url) {
 		return String(url).replace(/\?.*$/, '?…');
+	},
+
+
+	/**
+	 * Whether a request might succeed if tried again later
+	 */
+	isTransientError(e) {
+		return !!e && (e.isNetworkError || e.isTimeout || e.status >= 500);
 	},
 
 

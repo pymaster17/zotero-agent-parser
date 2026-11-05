@@ -66,7 +66,18 @@ var AgentParserBackends = {
 		let since = Date.now();
 		while (true) {
 			job.checkCancelled();
-			let result = await fn();
+			let result;
+			try {
+				result = await fn();
+			}
+			catch (e) {
+				// Keep polling through dropped connections and server hiccups
+				if (!AgentParserHTTP.isTransientError(e)) {
+					throw e;
+				}
+				job.checkCancelled();
+				Zotero.debug(`Agent Parser: Polling for ${job.dataID} failed (${e.message}) -- trying again`);
+			}
 			if (result !== undefined) {
 				return result;
 			}
@@ -223,10 +234,9 @@ AgentParserBackends.Tasks = class {
 			headers[key] = value;
 		}
 		Object.assign(headers, this._authHeaders(url));
-		await AgentParserHTTP.request('PUT', url, {
+		await AgentParserHTTP.upload(url, () => AgentParserBackends.readFile(job.filePath), {
 			headers,
-			body: await AgentParserBackends.readFile(job.filePath),
-			timeout: 30 * 60 * 1000
+			checkCancelled: () => job.checkCancelled()
 		});
 	}
 
@@ -463,9 +473,8 @@ AgentParserBackends.CloudV4 = class {
 						checkCancelled();
 						batch.onStatus(job, 'uploading');
 						try {
-							await AgentParserHTTP.request('PUT', url, {
-								body: await AgentParserBackends.readFile(job.filePath),
-								timeout: 30 * 60 * 1000
+							await AgentParserHTTP.upload(url, () => AgentParserBackends.readFile(job.filePath), {
+								checkCancelled
 							});
 							entry.submittedAt = Date.now();
 							batch.onStatus(job, 'pending');
@@ -728,9 +737,8 @@ AgentParserBackends.CloudV4 = class {
 		
 		// Presigned URL -- must not send Content-Type or Authorization
 		job.onStatus('uploading');
-		await AgentParserHTTP.request('PUT', uploadURL, {
-			body: await AgentParserBackends.readFile(job.filePath),
-			timeout: 30 * 60 * 1000
+		await AgentParserHTTP.upload(uploadURL, () => AgentParserBackends.readFile(job.filePath), {
+			checkCancelled: () => job.checkCancelled()
 		});
 		
 		let result = await AgentParserBackends.poll(job, async () => {

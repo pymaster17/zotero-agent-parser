@@ -283,6 +283,7 @@ var AgentParserOutput = {
 		add('source_sha256', source.sha256);
 		add('parser', parser.service);
 		add('parser_model', parser.modelVersion);
+		add('parser_ocr', parser.isOCR || null);
 		add('parser_fallback_reason', parser.fallbackReason);
 		add('parser_input', parser.input);
 		add('parser_source_url', parser.input == 'url' ? parser.sourceURL : null);

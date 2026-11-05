@@ -24,6 +24,7 @@ AgentParser = {
 	_pumpScheduled: false,
 	_retryTimer: null,
 	_windowElements: new WeakMap(),
+	_started: false,
 	_shuttingDown: false,
 	_l10n: null,
 
@@ -33,6 +34,8 @@ AgentParser = {
 		this.version = version;
 		this.rootURI = rootURI;
 		this._l10n = typeof Localization != 'undefined' ? new Localization([this.FTL]) : null;
+		// Load the saved queue before anything can add to it, since saving the queue overwrites it
+		this._loadQueue();
 		this._notifierID = Zotero.Notifier.registerObserver(this, ['item'], 'agentParser');
 		// Only in the full edition
 		this.local = typeof AgentParserLocal != 'undefined' ? AgentParserLocal : null;
@@ -76,12 +79,18 @@ AgentParser = {
 
 	/**
 	 * @param {String} name
-	 * @param {String} [model] - Cloud model version to use instead of the configured one
+	 * @param {Object} [overrides]
+	 * @param {String} [overrides.model] - Cloud model version to use instead of the configured one
+	 * @param {Boolean} [overrides.ocr] - Whether the cloud service should OCR the file instead of
+	 *     using its text layer, overriding the configured setting
 	 */
-	createBackend(name, model = null) {
+	createBackend(name, { model = null, ocr = null } = {}) {
 		return AgentParserBackends.create(name, (prefName) => {
 			if (model && prefName == 'cloudV4.modelVersion') {
 				return model;
+			}
+			if (ocr !== null && prefName == 'cloudV4.isOCR') {
+				return ocr;
 			}
 			return this.getPref(prefName);
 		});
@@ -220,7 +229,7 @@ AgentParser = {
 	},
 	
 	
-	restoreQueue() {
+	_loadQueue() {
 		let saved;
 		try {
 			saved = JSON.parse(this.getPref('queue') || '[]');
@@ -237,10 +246,19 @@ AgentParser = {
 					bulk: !!entry.bulk,
 					backend: AgentParserBackends.classFor(entry.backend) ? entry.backend : null,
 					model: entry.model || null,
+					ocr: typeof entry.ocr == 'boolean' ? entry.ocr : null,
 					fallbackReason: entry.fallbackReason || null
 				});
 			}
 		}
+	},
+	
+	
+	/**
+	 * Start processing the queue once Zotero is initialized
+	 */
+	restoreQueue() {
+		this._started = true;
 		if (this._queue.length) {
 			Zotero.debug(`Agent Parser: Resuming ${this._queue.length} queued job(s)`);
 		}
@@ -273,6 +291,7 @@ AgentParser = {
 				bulk: x.bulk,
 				backend: x.backend || null,
 				model: x.model || null,
+				ocr: typeof x.ocr == 'boolean' ? x.ocr : null,
 				fallbackReason: x.fallbackReason || null
 			}));
 		this.setPref('queue', JSON.stringify(entries));
@@ -301,7 +320,7 @@ AgentParser = {
 	
 	
 	_pump() {
-		if (this._shuttingDown) {
+		if (this._shuttingDown || !this._started) {
 			return;
 		}
 		let now = Date.now();
@@ -361,7 +380,7 @@ AgentParser = {
 					if (this._shuttingDown) {
 						return;
 					}
-					Zotero.logError(e);
+					Zotero.logError(`Agent Parser: Failed to parse ${job.key} (${job.title}): ${e.message || e}`);
 					await this._notify('failure', job, e.message || String(e));
 				})
 				.finally(() => {
@@ -403,6 +422,7 @@ AgentParser = {
 				bulk: job.bulk,
 				backend: job.backend,
 				model: job.model,
+				ocr: job.ocr,
 				fallbackReason: job.fallbackReason,
 				notBefore: Date.now() + this.BUSY_RETRY_MINUTES * 60 * 1000
 			});
@@ -427,7 +447,7 @@ AgentParser = {
 		try {
 			let backendName = job.service;
 			Zotero.debug(`Agent Parser: Parsing ${job.key} (${ctx.filePath}) with ${backendName}`);
-			let parser = await this.createBackend(backendName, job.model).parse({
+			let parser = await this.createBackend(backendName, { model: job.model, ocr: job.ocr }).parse({
 				...ctx.backendJob,
 				pollInterval: this._getPollInterval(),
 				timeout: this._getTimeout(),
@@ -657,18 +677,30 @@ AgentParser = {
 			sha256,
 			parser
 		});
+		let fallback = null;
 		if (repetition) {
+			let mode = (parser.modelVersion || 'default') + (parser.isOCR ? '+ocr' : '');
 			Zotero.debug(`Agent Parser: ${job.key} output repeats ${JSON.stringify(repetition.unit.substr(0, 40))} `
-				+ `over ${repetition.length} characters (${parser.service}, ${parser.modelVersion || 'default'} model)`);
-			// The fallback did no better, so keep what the first model produced
+				+ `over ${repetition.length} characters (${parser.service}, ${mode})`);
+			fallback = this._getFallback(job, parser);
+			let reason = `${mode} output repeated ${repetition.length} characters`;
+			if (fallback) {
+				fallback.reason = job.fallbackReason ? `${job.fallbackReason}; ${reason}` : reason;
+			}
+			// A fallback that did no better doesn't replace what the first model produced
 			if (job.fallbackReason) {
-				Zotero.debug(`Agent Parser: Keeping existing results for ${job.key}`);
+				if (fallback) {
+					this._enqueueFallback(job, fallback);
+				}
+				else {
+					Zotero.debug(`Agent Parser: Keeping existing results for ${job.key}`);
+				}
 				return false;
 			}
 		}
 		await AgentParserOutput.install(stagingDir, outputDir);
-		if (repetition && job.service == 'cloudV4' && parser.modelVersion == 'vlm') {
-			this._enqueueFallback(job, `vlm output repeated ${repetition.length} characters`);
+		if (fallback) {
+			this._enqueueFallback(job, fallback);
 		}
 		
 		if (this.getPref('markForSync')) {
@@ -687,14 +719,36 @@ AgentParser = {
 	
 	
 	/**
-	 * Parse again with the pipeline model, whose separate layout, OCR, formula, and table models
-	 * don't fall into the loops a VLM can. Retrying with the VLM doesn't help, since it produces
-	 * the same output for the same file.
+	 * Choose how to parse a file again after its output repeated itself
 	 *
-	 * The VLM results stay in place until the pipeline results replace them.
+	 * Parsing again the same way doesn't help, since the service produces the same output for
+	 * the same file. Without OCR, the cloud "vlm" model (actually MinerU's hybrid backend) takes
+	 * text from the PDF's text layer and reads inline formulas with a small formula model, which
+	 * is where most loops come from -- and the pipeline model uses that same formula model. With
+	 * OCR, the VLM reads whole lines, formulas included. If that still loops, the pipeline model's
+	 * separate layout, OCR, and table models are the last resort.
+	 *
+	 * @return {Object|null} - { model, ocr }, or null if there's nothing left to try
 	 */
-	_enqueueFallback(job, reason) {
-		Zotero.debug(`Agent Parser: Parsing ${job.key} again with the pipeline model (${reason})`);
+	_getFallback(job, parser) {
+		if (job.service != 'cloudV4' || parser.modelVersion != 'vlm') {
+			return null;
+		}
+		if (!parser.isOCR) {
+			return { model: 'vlm', ocr: true };
+		}
+		return { model: 'pipeline', ocr: null };
+	},
+	
+	
+	/**
+	 * Queue a fallback parse from _getFallback()
+	 *
+	 * The existing results stay in place until a fallback without repetition replaces them.
+	 */
+	_enqueueFallback(job, { model, ocr, reason }) {
+		Zotero.debug(`Agent Parser: Parsing ${job.key} again with the ${model} model`
+			+ `${ocr ? ' and OCR' : ''} (${reason})`);
 		this._queue = this._queue.filter(x => x.key != job.key);
 		this._queue.push({
 			key: job.key,
@@ -702,7 +756,8 @@ AgentParser = {
 			waitForFile: false,
 			bulk: false,
 			backend: 'cloudV4',
-			model: 'pipeline',
+			model,
+			ocr,
 			fallbackReason: reason
 		});
 		this._persistQueue();

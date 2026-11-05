@@ -42,7 +42,7 @@ pref("extensions.agentparser.cloudV4.enableFormula", true);
 pref("extensions.agentparser.cloudV4.enableTable", true);
 pref("extensions.agentparser.cloudV4.language", "ch");
 // Hosts whose PDFs are submitted by URL instead of being uploaded
-pref("extensions.agentparser.cloudV4.urlHosts", "arxiv.org");
+pref("extensions.agentparser.cloudV4.urlHosts", "arxiv.org, aclanthology.org, isca-archive.org, jmlr.org, openaccess.thecvf.com, proceedings.iclr.cc, proceedings.mlr.press, proceedings.neurips.cc");
 
 // Internal: persisted queue of pending jobs
 pref("extensions.agentparser.queue", "[]");
