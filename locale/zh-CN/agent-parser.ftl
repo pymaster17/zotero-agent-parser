@@ -112,7 +112,7 @@ agentparser-pref-include-linked =
     .label = 同时解析链接文件（结果写在 PDF 旁的文件夹中，不经 Zotero 同步）
 agentparser-pref-notifications =
     .label = 解析完成或失败时显示通知
-agentparser-pref-timeout = 单个任务超时（分钟）：
+agentparser-pref-timeout = 解析超时（分钟，从服务端开始处理时算起）：
 agentparser-pref-wait-file = 等待 PDF 下载完成（分钟）：
 
 agentparser-pref-output = 解析产物

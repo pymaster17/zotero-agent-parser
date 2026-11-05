@@ -3,6 +3,8 @@
 var AgentParserOutput = {
 	MARKDOWN_FILE: 'full.md',
 	IMAGES_DIR: 'images',
+	// Characters of repeated text that count as degenerate output
+	MIN_REPETITION: 400,
 
 
 	/**
@@ -147,6 +149,58 @@ var AgentParserOutput = {
 			PathUtils.join(stagingDir, this.MARKDOWN_FILE),
 			this.buildFrontMatter(meta) + md
 		);
+		return { repetition: this.findRepetition(md) };
+	},
+	
+	
+	/**
+	 * Find degenerate output, where a model got stuck emitting the same text over and over
+	 *
+	 * Looks for a unit of 8-400 characters repeated at least 5 times and covering at least
+	 * MIN_REPETITION characters. Only units with real content (letters or CJK, outside of HTML
+	 * tags) count, so that repeated punctuation, numbers, or empty table cells don't.
+	 *
+	 * A repeated unit of length p means text[i] == text[i + p] for a stretch of at least
+	 * max(4p, MIN_REPETITION - p) characters, which is never shorter than 4/5 of MIN_REPETITION.
+	 * So for each p, it's enough to compare at positions that far apart and expand around matches.
+	 *
+	 * @return {Object|null} - { unit, length } of the longest run, or null if there's none
+	 */
+	findRepetition(text) {
+		const MIN_UNIT = 8;
+		const MAX_UNIT = 400;
+		const MIN_REPEATS = 5;
+		let stride = Math.floor(this.MIN_REPETITION * (MIN_REPEATS - 1) / MIN_REPEATS) - 1;
+		let same = (i, p) => text.charCodeAt(i) == text.charCodeAt(i + p);
+		let longest = null;
+		for (let p = MIN_UNIT; p <= MAX_UNIT; p++) {
+			for (let i = 0; i + p < text.length; i += stride) {
+				if (!same(i, p)) {
+					continue;
+				}
+				let start = i;
+				let end = i;
+				while (start > 0 && same(start - 1, p)) {
+					start--;
+				}
+				while (end + 1 + p < text.length && same(end + 1, p)) {
+					end++;
+				}
+				let streak = end - start + 1;
+				let length = streak + p;
+				if (streak >= (MIN_REPEATS - 1) * p
+						&& length >= this.MIN_REPETITION
+						&& !(longest && longest.length >= length)) {
+					let unit = text.substr(start, p);
+					if (/[A-Za-z\u4e00-\u9fff]/.test(unit.replace(/<[^>]*>/g, ''))) {
+						longest = { unit, length };
+					}
+				}
+				// Skip the samples inside this stretch
+				i = end - end % stride;
+			}
+		}
+		return longest;
 	},
 	
 	
@@ -228,6 +282,8 @@ var AgentParserOutput = {
 		add('source_file', source.fileName);
 		add('source_sha256', source.sha256);
 		add('parser', parser.service);
+		add('parser_model', parser.modelVersion);
+		add('parser_fallback_reason', parser.fallbackReason);
 		add('parser_input', parser.input);
 		add('parser_source_url', parser.input == 'url' ? parser.sourceURL : null);
 		add('parsed_at', meta.parsedAt);

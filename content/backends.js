@@ -12,7 +12,8 @@
  *   stagingDir      -- empty directory for the extracted results
  *   tempDir         -- scratch directory for downloads
  *   pollInterval    -- milliseconds
- *   deadline        -- Date.now() value after which to give up
+ *   timeout         -- milliseconds to wait once the service starts working on the file
+ *   queueTimeout    -- milliseconds to wait while the service still has the file queued
  *   onStatus(str)   -- progress callback
  *   checkCancelled()-- throws if the job should stop
  * }
@@ -56,19 +57,42 @@ var AgentParserBackends = {
 
 	/**
 	 * Poll until `fn` returns a non-undefined value
+	 *
+	 * Services that report queueing set `job.queued` while the file waits on the server and
+	 * `job.startedAt` once processing starts, so that `job.timeout` only covers actual parsing.
+	 * Otherwise the timeout runs from the start of polling.
 	 */
 	async poll(job, fn) {
+		let since = Date.now();
 		while (true) {
 			job.checkCancelled();
 			let result = await fn();
 			if (result !== undefined) {
 				return result;
 			}
-			if (Date.now() > job.deadline) {
+			if (this.isTimedOut(job, since)) {
 				throw new Error("Timed out waiting for parse results");
 			}
 			await AgentParserHTTP.sleep(job.pollInterval);
 		}
+	},
+	
+	
+	isTimedOut({ queued, startedAt, timeout, queueTimeout }, submittedAt) {
+		let now = Date.now();
+		if (queued) {
+			return now - submittedAt > queueTimeout;
+		}
+		return now - (startedAt || submittedAt) > timeout;
+	},
+	
+	
+	/**
+	 * Whether the service refused new work for now, in which case the file should go back in the
+	 * queue rather than fail
+	 */
+	isServerBusy(e) {
+		return !!e && AgentParserBackends.CloudV4.BUSY_CODES.has(e.code);
 	}
 };
 
@@ -226,6 +250,12 @@ AgentParserBackends.Tasks = class {
  */
 AgentParserBackends.CloudV4 = class {
 	static MAX_BATCH = 50;
+	// The API rejects longer files
+	static MAX_PAGES = 200;
+	// -60009: submission queue is full, -60018: daily task limit reached
+	static BUSY_CODES = new Set([-60009, -60018]);
+	// States before the server starts working on a file
+	static QUEUED_STATES = new Set(['waiting-file', 'pending']);
 	
 	constructor(getPref) {
 		this.baseURL = AgentParserBackends.trimURL(getPref('cloudV4.url'));
@@ -253,7 +283,9 @@ AgentParserBackends.CloudV4 = class {
 	
 	_check(json) {
 		if (!json || json.code !== 0) {
-			throw new Error(`MinerU API error: ${json && (json.msg || json.msgCode || json.code)}`);
+			let e = new Error(`MinerU API error: ${json && (json.msg || json.msgCode || json.code)}`);
+			e.code = json && json.code;
+			throw e;
 		}
 		return json.data;
 	}
@@ -314,6 +346,9 @@ AgentParserBackends.CloudV4 = class {
 				}
 				catch (e) {
 					job.checkCancelled();
+					if (AgentParserBackends.isServerBusy(e)) {
+						throw e;
+					}
 					reason = e.message || String(e);
 				}
 			}
@@ -334,15 +369,17 @@ AgentParserBackends.CloudV4 = class {
 	 * @param {Object} batch
 	 * @param {Object[]} batch.jobs - Same fields as the job passed to parse()
 	 * @param {Number} batch.pollInterval
-	 * @param {Number} batch.timeout - Milliseconds to wait for each file once it's submitted
+	 * @param {Number} batch.timeout - Milliseconds to wait for each file once the server starts on it
+	 * @param {Number} batch.queueTimeout - Milliseconds to wait while the server has a file queued
 	 * @param {Function} batch.checkCancelled
 	 * @param {Function} batch.onStatus - (job, status)
 	 * @param {Function} batch.onDone - async (job, parserInfo)
 	 * @param {Function} batch.onFailed - async (job, error)
+	 * @param {Function} batch.onDeferred - async (job, error) -- the server refused new work for now
 	 */
 	async parseBatch(batch) {
 		let { jobs, checkCancelled } = batch;
-		// dataID -> { job, mode, batchID, submittedAt }
+		// dataID -> { job, mode, batchID, submittedAt, queued, startedAt }
 		let pending = new Map();
 		let uploadQueue = [];
 		let fallback = [];
@@ -350,7 +387,16 @@ AgentParserBackends.CloudV4 = class {
 		
 		let track = (chunk, batchID, mode) => {
 			for (let job of chunk) {
-				pending.set(job.dataID, { job, mode, batchID, submittedAt: mode == 'url' ? Date.now() : null });
+				pending.set(job.dataID, {
+					job,
+					mode,
+					batchID,
+					submittedAt: mode == 'url' ? Date.now() : null,
+					queued: true,
+					startedAt: null,
+					timeout: batch.timeout,
+					queueTimeout: batch.queueTimeout
+				});
 				batch.onStatus(job, mode == 'url' ? 'pending' : 'waiting-upload');
 			}
 		};
@@ -365,15 +411,39 @@ AgentParserBackends.CloudV4 = class {
 			}
 		};
 		
+		let busyError = null;
+		let defer = async (chunk, e) => {
+			busyError = e;
+			Zotero.debug(`Agent Parser: MinerU refused ${chunk.length} file(s) for now (${e.message})`);
+			for (let job of chunk) {
+				await batch.onDeferred(job, e);
+			}
+		};
+		
 		let requestUploads = async (uploadJobs) => {
 			for (let chunk of this._chunk(uploadJobs)) {
-				let data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/file-urls/batch', {
-					headers: this._headers(),
-					body: JSON.stringify({
-						files: chunk.map(job => ({ name: job.uploadName, data_id: job.dataID, is_ocr: this.isOCR })),
-						...this._options()
-					})
-				}));
+				// Once the server is busy, don't keep asking within this batch
+				if (busyError) {
+					await defer(chunk, busyError);
+					continue;
+				}
+				let data;
+				try {
+					data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/file-urls/batch', {
+						headers: this._headers(),
+						body: JSON.stringify({
+							files: chunk.map(job => ({ name: job.uploadName, data_id: job.dataID, is_ocr: this.isOCR })),
+							...this._options()
+						})
+					}));
+				}
+				catch (e) {
+					if (!AgentParserBackends.isServerBusy(e)) {
+						throw e;
+					}
+					await defer(chunk, e);
+					continue;
+				}
 				if (!data.batch_id || !data.file_urls || data.file_urls.length != chunk.length) {
 					throw new Error("MinerU API did not return upload URLs");
 				}
@@ -429,6 +499,10 @@ AgentParserBackends.CloudV4 = class {
 		}
 		
 		for (let chunk of this._chunk(urlJobs)) {
+			if (busyError) {
+				await defer(chunk, busyError);
+				continue;
+			}
 			try {
 				let data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/extract/task/batch', {
 					headers: this._headers(),
@@ -445,6 +519,10 @@ AgentParserBackends.CloudV4 = class {
 			}
 			catch (e) {
 				checkCancelled();
+				if (AgentParserBackends.isServerBusy(e)) {
+					await defer(chunk, e);
+					continue;
+				}
 				Zotero.debug(`Agent Parser: URL batch submission failed (${e.message}) -- uploading instead`);
 				uploadJobs.push(...chunk);
 			}
@@ -513,6 +591,10 @@ AgentParserBackends.CloudV4 = class {
 						await fail(entry, new Error(`MinerU parsing failed: ${result.err_msg || 'unknown error'}`));
 					}
 					else if (entry.submittedAt) {
+						entry.queued = AgentParserBackends.CloudV4.QUEUED_STATES.has(result.state);
+						if (!entry.queued && !entry.startedAt) {
+							entry.startedAt = Date.now();
+						}
 						let progress = result.extract_progress;
 						batch.onStatus(entry.job, result.state
 							+ (progress && progress.total_pages ? ` ${progress.extracted_pages}/${progress.total_pages}` : ''));
@@ -521,7 +603,7 @@ AgentParserBackends.CloudV4 = class {
 			}
 			
 			for (let entry of [...pending.values()]) {
-				if (entry.submittedAt && Date.now() - entry.submittedAt > batch.timeout) {
+				if (entry.submittedAt && AgentParserBackends.isTimedOut(entry, entry.submittedAt)) {
 					await fail(entry, new Error("Timed out waiting for parse results"));
 				}
 			}
@@ -590,6 +672,8 @@ AgentParserBackends.CloudV4 = class {
 	}
 	
 	async _parseURL(job, url) {
+		job.queued = false;
+		job.startedAt = null;
 		job.onStatus('submitting-url');
 		let data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/extract/task', {
 			headers: this._headers(),
@@ -620,6 +704,8 @@ AgentParserBackends.CloudV4 = class {
 	}
 	
 	async _parseUpload(job) {
+		job.queued = false;
+		job.startedAt = null;
 		job.onStatus('submitting');
 		let dataID = job.dataID;
 		let data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/file-urls/batch', {
@@ -673,6 +759,10 @@ AgentParserBackends.CloudV4 = class {
 		}
 		if (result.state == 'failed') {
 			throw new Error(`MinerU parsing failed: ${result.err_msg || 'unknown error'}`);
+		}
+		job.queued = AgentParserBackends.CloudV4.QUEUED_STATES.has(result.state);
+		if (!job.queued && !job.startedAt) {
+			job.startedAt = Date.now();
 		}
 		let progress = result.extract_progress;
 		job.onStatus(result.state

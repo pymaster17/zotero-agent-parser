@@ -2,7 +2,7 @@
 pref("extensions.agentparser.autoParse", true);
 pref("extensions.agentparser.skipSyncedItems", true);
 pref("extensions.agentparser.includeLinkedFiles", false);
-pref("extensions.agentparser.concurrency", "1");
+pref("extensions.agentparser.concurrency", "4");
 pref("extensions.agentparser.waitForFileMinutes", "10");
 pref("extensions.agentparser.timeoutMinutes", "60");
 pref("extensions.agentparser.pollIntervalSeconds", "3");

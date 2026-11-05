@@ -112,7 +112,7 @@ agentparser-pref-include-linked =
     .label = Also parse linked files (results go next to the PDF and aren't synced by Zotero)
 agentparser-pref-notifications =
     .label = Show a notification when parsing finishes or fails
-agentparser-pref-timeout = Timeout per job (minutes):
+agentparser-pref-timeout = Parse timeout (minutes, from when the service starts on the file):
 agentparser-pref-wait-file = Wait for PDF download (minutes):
 
 agentparser-pref-output = Output

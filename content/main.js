@@ -5,6 +5,13 @@ AgentParser = {
 	FTL: 'agent-parser.ftl',
 	// The v4 API accepts up to 50 files per request
 	BATCH_SIZE: 50,
+	// Batches in flight at once. The server parses submitted files in parallel, so this hands it
+	// plenty of work, while limiting simultaneous uploads (each reads a whole PDF into memory).
+	MAX_BATCHES: 4,
+	// How long a file may wait in the server's queue before we give up on it
+	QUEUE_TIMEOUT_HOURS: 24,
+	// When the server refuses new work (queue full, daily task limit), try again after this long
+	BUSY_RETRY_MINUTES: 15,
 
 	id: null,
 	version: null,
@@ -13,8 +20,9 @@ AgentParser = {
 	_notifierID: null,
 	_queue: [],
 	_running: new Map(),
-	_batchRunning: false,
+	_batchesRunning: 0,
 	_pumpScheduled: false,
+	_retryTimer: null,
 	_windowElements: new WeakMap(),
 	_shuttingDown: false,
 	_l10n: null,
@@ -36,6 +44,7 @@ AgentParser = {
 
 	shutdown() {
 		this._shuttingDown = true;
+		clearTimeout(this._retryTimer);
 		if (this._notifierID) {
 			Zotero.Notifier.unregisterObserver(this._notifierID);
 			this._notifierID = null;
@@ -65,8 +74,17 @@ AgentParser = {
 	},
 
 
-	createBackend(name) {
-		return AgentParserBackends.create(name, prefName => this.getPref(prefName));
+	/**
+	 * @param {String} name
+	 * @param {String} [model] - Cloud model version to use instead of the configured one
+	 */
+	createBackend(name, model = null) {
+		return AgentParserBackends.create(name, (prefName) => {
+			if (model && prefName == 'cloudV4.modelVersion') {
+				return model;
+			}
+			return this.getPref(prefName);
+		});
 	},
 	
 	
@@ -217,7 +235,9 @@ AgentParser = {
 					force: !!entry.force,
 					waitForFile: false,
 					bulk: !!entry.bulk,
-					backend: AgentParserBackends.classFor(entry.backend) ? entry.backend : null
+					backend: AgentParserBackends.classFor(entry.backend) ? entry.backend : null,
+					model: entry.model || null,
+					fallbackReason: entry.fallbackReason || null
 				});
 			}
 		}
@@ -247,7 +267,14 @@ AgentParser = {
 			return;
 		}
 		let entries = [...this._running.values(), ...this._queue]
-			.map(x => ({ key: x.key, force: x.force, bulk: x.bulk, backend: x.backend || null }));
+			.map(x => ({
+				key: x.key,
+				force: x.force,
+				bulk: x.bulk,
+				backend: x.backend || null,
+				model: x.model || null,
+				fallbackReason: x.fallbackReason || null
+			}));
 		this.setPref('queue', JSON.stringify(entries));
 	},
 	
@@ -277,15 +304,19 @@ AgentParser = {
 		if (this._shuttingDown) {
 			return;
 		}
+		let now = Date.now();
+		// A follow-up job (e.g., a fallback parse) waits for the current one on the same file
+		let ready = x => (!x.notBefore || x.notBefore <= now) && !this._running.has(x.key);
 		let batched = x => x.bulk && this._supportsBatch(this.getBackendFor(x));
+		this._scheduleRetry();
 		
-		// One batch at a time, alongside regular jobs, so that newly added items don't wait for a
-		// whole library to finish
-		if (!this._batchRunning && this._queue.some(batched)) {
-			let backend = this.getBackendFor(this._queue.find(batched));
+		// Batches run alongside regular jobs, so that newly added items don't wait for a whole
+		// library to finish
+		while (this._batchesRunning < this.MAX_BATCHES && this._queue.some(x => ready(x) && batched(x))) {
+			let backend = this.getBackendFor(this._queue.find(x => ready(x) && batched(x)));
 			let entries = [];
 			this._queue = this._queue.filter((x) => {
-				if (batched(x) && this.getBackendFor(x) == backend && entries.length < this.BATCH_SIZE) {
+				if (ready(x) && batched(x) && this.getBackendFor(x) == backend && entries.length < this.BATCH_SIZE) {
 					entries.push(x);
 					return false;
 				}
@@ -295,12 +326,12 @@ AgentParser = {
 			for (let job of jobs) {
 				this._running.set(job.key, job);
 			}
-			this._batchRunning = true;
+			this._batchesRunning++;
 			this._persistQueue();
 			this._processBatch(jobs)
 				.catch(e => Zotero.logError(e))
 				.finally(() => {
-					this._batchRunning = false;
+					this._batchesRunning--;
 					for (let job of jobs) {
 						this._running.delete(job.key);
 					}
@@ -315,7 +346,7 @@ AgentParser = {
 		while (true) {
 			let index = this._queue.findIndex((x) => {
 				let name = this.getBackendFor(x);
-				return !batched(x) && running(name) < capacity(name);
+				return ready(x) && !batched(x) && running(name) < capacity(name);
 			});
 			if (index == -1) {
 				break;
@@ -342,6 +373,45 @@ AgentParser = {
 	},
 	
 	
+	/**
+	 * Wake up the pump when the earliest deferred job becomes ready
+	 */
+	_scheduleRetry() {
+		clearTimeout(this._retryTimer);
+		this._retryTimer = null;
+		// Jobs that are ready but waiting for capacity get picked up when a running job finishes
+		let now = Date.now();
+		let times = this._queue.filter(x => x.notBefore > now).map(x => x.notBefore);
+		if (!times.length || this._shuttingDown) {
+			return;
+		}
+		let delay = Math.min(...times) - now + 1000;
+		this._retryTimer = setTimeout(() => this._pump(), delay);
+	},
+	
+	
+	/**
+	 * Put a job back in the queue because the service refused new work for now
+	 */
+	_defer(job, e) {
+		Zotero.debug(`Agent Parser: ${job.key} deferred for ${this.BUSY_RETRY_MINUTES} minutes (${e.message})`);
+		if (!this._queue.some(x => x.key == job.key)) {
+			this._queue.push({
+				key: job.key,
+				force: job.force,
+				waitForFile: false,
+				bulk: job.bulk,
+				backend: job.backend,
+				model: job.model,
+				fallbackReason: job.fallbackReason,
+				notBefore: Date.now() + this.BUSY_RETRY_MINUTES * 60 * 1000
+			});
+		}
+		this._persistQueue();
+		this._scheduleRetry();
+	},
+	
+	
 	_checkCancelled() {
 		if (this._shuttingDown) {
 			throw new Error("Agent Parser is shutting down");
@@ -357,10 +427,11 @@ AgentParser = {
 		try {
 			let backendName = job.service;
 			Zotero.debug(`Agent Parser: Parsing ${job.key} (${ctx.filePath}) with ${backendName}`);
-			let parser = await this.createBackend(backendName).parse({
+			let parser = await this.createBackend(backendName, job.model).parse({
 				...ctx.backendJob,
 				pollInterval: this._getPollInterval(),
-				deadline: Date.now() + this._getTimeout(),
+				timeout: this._getTimeout(),
+				queueTimeout: this._getQueueTimeout(),
 				onStatus: (status) => {
 					job.status = status;
 					Zotero.debug(`Agent Parser: ${job.key}: ${status}`);
@@ -370,6 +441,12 @@ AgentParser = {
 			if (await this._complete(ctx, parser)) {
 				await this._notify('success', job);
 			}
+		}
+		catch (e) {
+			if (!AgentParserBackends.isServerBusy(e)) {
+				throw e;
+			}
+			this._defer(job, e);
 		}
 		finally {
 			await this._cleanup(ctx);
@@ -382,6 +459,9 @@ AgentParser = {
 		let finishJob = (job) => {
 			this._running.delete(job.key);
 			this._persistQueue();
+			if (this._queue.some(x => x.key == job.key)) {
+				this._schedulePump();
+			}
 		};
 		
 		let ctxs = [];
@@ -409,6 +489,7 @@ AgentParser = {
 					jobs: ctxs.map(ctx => ctx.backendJob),
 					pollInterval: this._getPollInterval(),
 					timeout: this._getTimeout(),
+					queueTimeout: this._getQueueTimeout(),
 					checkCancelled: () => this._checkCancelled(),
 					onStatus: (backendJob, status) => {
 						backendJob.ctx.job.status = status;
@@ -434,6 +515,13 @@ AgentParser = {
 						remaining.delete(ctx);
 						Zotero.logError(`Agent Parser: Failed to parse ${ctx.job.key} (${ctx.job.title}): ${e.message || e}`);
 						stats.failed++;
+						await this._cleanup(ctx);
+						finishJob(ctx.job);
+					},
+					onDeferred: async (backendJob, e) => {
+						let ctx = backendJob.ctx;
+						remaining.delete(ctx);
+						this._defer(ctx.job, e);
 						await this._cleanup(ctx);
 						finishJob(ctx.job);
 					}
@@ -466,6 +554,12 @@ AgentParser = {
 	 */
 	async _prepare(job) {
 		let { libraryID, key } = Zotero.Items.parseLibraryKey(job.key);
+		let library = Zotero.Libraries.get(libraryID);
+		if (!library) {
+			return null;
+		}
+		// The queue is restored at startup, before Zotero loads item data for every library
+		await library.waitForDataLoad('item');
 		let attachment = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, key);
 		if (!attachment || !this.isParsable(attachment)) {
 			return null;
@@ -476,6 +570,16 @@ AgentParser = {
 		if (!filePath) {
 			Zotero.debug(`Agent Parser: File for ${job.key} not available -- skipping`);
 			return null;
+		}
+		
+		let maxPages = AgentParserBackends.classFor(job.service)?.MAX_PAGES;
+		if (maxPages) {
+			job.status = 'counting pages';
+			let pages = await this._getPageCount(attachment);
+			if (pages > maxPages) {
+				Zotero.debug(`Agent Parser: ${job.key} has ${pages} pages, more than ${job.service} accepts (${maxPages}) -- skipping`);
+				return null;
+			}
 		}
 		
 		let outputDir = AgentParserOutput.getOutputDir(attachment, filePath, this.getPref('outputDirName'));
@@ -516,6 +620,21 @@ AgentParser = {
 	
 	
 	/**
+	 * @return {Promise<Integer|null>} - Number of pages, or null if the PDF can't be read
+	 */
+	async _getPageCount(attachment) {
+		try {
+			let { totalPages } = await Zotero.PDFWorker.getFullText(attachment.id, 1);
+			return totalPages || null;
+		}
+		catch (e) {
+			Zotero.debug(`Agent Parser: Couldn't count pages of ${attachment.libraryKey}: ${e}`);
+			return null;
+		}
+	},
+	
+	
+	/**
 	 * Save parse results next to the PDF
 	 *
 	 * @return {Promise<Boolean>} - False if the attachment went away in the meantime
@@ -528,14 +647,29 @@ AgentParser = {
 		}
 		
 		job.status = 'saving';
-		await AgentParserOutput.finalize(stagingDir, {
+		if (job.fallbackReason) {
+			parser = { ...parser, fallbackReason: job.fallbackReason };
+		}
+		let { repetition } = await AgentParserOutput.finalize(stagingDir, {
 			item: attachment.parentItem,
 			attachment,
 			filePath,
 			sha256,
 			parser
 		});
+		if (repetition) {
+			Zotero.debug(`Agent Parser: ${job.key} output repeats ${JSON.stringify(repetition.unit.substr(0, 40))} `
+				+ `over ${repetition.length} characters (${parser.service}, ${parser.modelVersion || 'default'} model)`);
+			// The fallback did no better, so keep what the first model produced
+			if (job.fallbackReason) {
+				Zotero.debug(`Agent Parser: Keeping existing results for ${job.key}`);
+				return false;
+			}
+		}
 		await AgentParserOutput.install(stagingDir, outputDir);
+		if (repetition && job.service == 'cloudV4' && parser.modelVersion == 'vlm') {
+			this._enqueueFallback(job, `vlm output repeated ${repetition.length} characters`);
+		}
 		
 		if (this.getPref('markForSync')) {
 			try {
@@ -552,6 +686,30 @@ AgentParser = {
 	},
 	
 	
+	/**
+	 * Parse again with the pipeline model, whose separate layout, OCR, formula, and table models
+	 * don't fall into the loops a VLM can. Retrying with the VLM doesn't help, since it produces
+	 * the same output for the same file.
+	 *
+	 * The VLM results stay in place until the pipeline results replace them.
+	 */
+	_enqueueFallback(job, reason) {
+		Zotero.debug(`Agent Parser: Parsing ${job.key} again with the pipeline model (${reason})`);
+		this._queue = this._queue.filter(x => x.key != job.key);
+		this._queue.push({
+			key: job.key,
+			force: true,
+			waitForFile: false,
+			bulk: false,
+			backend: 'cloudV4',
+			model: 'pipeline',
+			fallbackReason: reason
+		});
+		this._persistQueue();
+		this._schedulePump();
+	},
+	
+	
 	async _cleanup(ctx) {
 		await IOUtils.remove(ctx.tempDir, { recursive: true, ignoreAbsent: true });
 	},
@@ -564,6 +722,11 @@ AgentParser = {
 	
 	_getTimeout() {
 		return Math.max(1, this._getIntPref('timeoutMinutes', 60)) * 60 * 1000;
+	},
+	
+	
+	_getQueueTimeout() {
+		return this.QUEUE_TIMEOUT_HOURS * 60 * 60 * 1000;
 	},
 	
 	
