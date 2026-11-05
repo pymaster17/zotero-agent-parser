@@ -62,8 +62,7 @@ var AgentParserBackends = {
 	 * `job.startedAt` once processing starts, so that `job.timeout` only covers actual parsing.
 	 * Otherwise the timeout runs from the start of polling.
 	 */
-	async poll(job, fn) {
-		let since = Date.now();
+	async poll(job, fn, since = Date.now()) {
 		while (true) {
 			job.checkCancelled();
 			let result;
@@ -267,6 +266,10 @@ AgentParserBackends.CloudV4 = class {
 	// States before the server starts working on a file
 	static QUEUED_STATES = new Set(['waiting-file', 'pending']);
 	
+	// Submissions older than this aren't resumed after a restart, since the service may have
+	// discarded them
+	static RESUME_MAX_AGE = 3 * 24 * 60 * 60 * 1000;
+	
 	constructor(getPref) {
 		this.baseURL = AgentParserBackends.trimURL(getPref('cloudV4.url'));
 		this.token = (getPref('cloudV4.token') || '').trim();
@@ -348,6 +351,16 @@ AgentParserBackends.CloudV4 = class {
 	async parse(job) {
 		let info = this._info();
 		
+		if (this._canResume(job)) {
+			try {
+				return await this._resume(job);
+			}
+			catch (e) {
+				job.checkCancelled();
+				Zotero.debug(`Agent Parser: Couldn't resume ${job.dataID} (${e.message}) -- submitting again`);
+			}
+		}
+		
 		if (job.sourceURL && this.isAllowedURL(job.sourceURL)) {
 			let reason = await this.checkURL(job.sourceURL, job.fileSize);
 			if (!reason) {
@@ -368,6 +381,74 @@ AgentParserBackends.CloudV4 = class {
 		
 		let batchID = await this._parseUpload(job);
 		return { ...info, input: 'upload', batchID };
+	}
+	
+	/**
+	 * Settings that change what the service produces, to tell whether an earlier submission
+	 * still matches
+	 */
+	_resumeKey() {
+		return JSON.stringify({ ...this._options(), is_ocr: this.isOCR });
+	}
+	
+	/**
+	 * Tell the caller about a submission the service accepted, so that it can be resumed after
+	 * a restart instead of being submitted (and paid for) again
+	 *
+	 * @param {Object} remote - { kind: 'task' or 'batch', id, mode: 'url' or 'upload' }
+	 */
+	_submitted(job, remote) {
+		job.onSubmitted?.({
+			...remote,
+			sha256: job.sha256,
+			options: this._resumeKey(),
+			submittedAt: Date.now()
+		});
+	}
+	
+	_canResume(job) {
+		let remote = job.resume;
+		return !!remote
+			&& (remote.kind == 'task' || remote.kind == 'batch')
+			&& typeof remote.id == 'string'
+			&& !!job.sha256 && remote.sha256 == job.sha256
+			&& remote.options == this._resumeKey()
+			&& Date.now() - remote.submittedAt < AgentParserBackends.CloudV4.RESUME_MAX_AGE;
+	}
+	
+	/**
+	 * Keep polling a submission from before a restart
+	 *
+	 * @throws If the service no longer has it, or the upload never finished
+	 */
+	async _resume(job) {
+		let remote = job.resume;
+		Zotero.debug(`Agent Parser: Resuming MinerU ${remote.kind} ${remote.id} for ${job.dataID}`);
+		job.queued = true;
+		job.startedAt = null;
+		let path = remote.kind == 'task' ? '/extract/task/' : '/extract-results/batch/';
+		let result = await AgentParserBackends.poll(job, async () => {
+			let data = this._check(await AgentParserHTTP.json(
+				'GET',
+				this.baseURL + path + encodeURIComponent(remote.id),
+				{ headers: this._headers() }
+			));
+			let result = remote.kind == 'task'
+				? data
+				: (data.extract_result || []).find(x => x.data_id == job.dataID);
+			if (!result || result.state == 'waiting-file') {
+				throw new Error(`MinerU ${remote.kind} ${remote.id} has no file for ${job.dataID}`);
+			}
+			return this._handleResult(job, result);
+		}, remote.submittedAt);
+		job.onStatus('downloading');
+		await this._downloadResult(job, result);
+		let info = { ...this._info(), input: remote.mode, resumed: true };
+		info[remote.kind == 'task' ? 'taskID' : 'batchID'] = remote.id;
+		if (remote.mode == 'url') {
+			info.sourceURL = job.sourceURL;
+		}
+		return info;
 	}
 	
 	/**
@@ -396,20 +477,27 @@ AgentParserBackends.CloudV4 = class {
 		let fallback = [];
 		let uploader = null;
 		
-		let track = (chunk, batchID, mode) => {
+		let track = (chunk, batchID, mode, resumedAt = null) => {
 			for (let job of chunk) {
 				pending.set(job.dataID, {
 					job,
 					mode,
 					batchID,
-					submittedAt: mode == 'url' ? Date.now() : null,
+					submittedAt: resumedAt || (mode == 'url' ? Date.now() : null),
+					resumed: !!resumedAt,
 					queued: true,
 					startedAt: null,
 					timeout: batch.timeout,
 					queueTimeout: batch.queueTimeout
 				});
-				batch.onStatus(job, mode == 'url' ? 'pending' : 'waiting-upload');
+				batch.onStatus(job, resumedAt || mode == 'url' ? 'pending' : 'waiting-upload');
 			}
+		};
+		// A submission from before a restart that the service no longer has gets submitted again
+		let resubmit = (entry, reason) => {
+			pending.delete(entry.job.dataID);
+			Zotero.debug(`Agent Parser: Couldn't resume ${entry.job.dataID} (${reason}) -- submitting again`);
+			fallback.push(entry.job);
 		};
 		let fail = async (entry, e) => {
 			pending.delete(entry.job.dataID);
@@ -479,6 +567,7 @@ AgentParserBackends.CloudV4 = class {
 								checkCancelled
 							});
 							entry.submittedAt = Date.now();
+							this._submitted(job, { kind: 'batch', id: entry.batchID, mode: 'upload' });
 							batch.onStatus(job, 'pending');
 						}
 						catch (e) {
@@ -492,11 +581,16 @@ AgentParserBackends.CloudV4 = class {
 			}
 		};
 		
-		// Split into URL and upload submissions
+		// Split into resumed, URL, and upload submissions
 		let urlJobs = [];
 		let uploadJobs = [];
 		for (let job of jobs) {
 			checkCancelled();
+			if (this._canResume(job)) {
+				Zotero.debug(`Agent Parser: Resuming MinerU batch ${job.resume.id} for ${job.dataID}`);
+				track([job], job.resume.id, job.resume.mode, job.resume.submittedAt);
+				continue;
+			}
 			if (job.sourceURL && this.isAllowedURL(job.sourceURL)) {
 				batch.onStatus(job, 'checking-url');
 				let reason = await this.checkURL(job.sourceURL, job.fileSize);
@@ -527,6 +621,9 @@ AgentParserBackends.CloudV4 = class {
 				}
 				Zotero.debug(`Agent Parser: Created MinerU URL batch ${data.batch_id} with ${chunk.length} file(s)`);
 				track(chunk, data.batch_id, 'url');
+				for (let job of chunk) {
+					this._submitted(job, { kind: 'batch', id: data.batch_id, mode: 'url' });
+				}
 			}
 			catch (e) {
 				checkCancelled();
@@ -574,7 +671,23 @@ AgentParserBackends.CloudV4 = class {
 					// Try again on the next round
 					checkCancelled();
 					Zotero.debug(`Agent Parser: Polling batch ${batchID} failed: ${e.message}`);
+					if (!AgentParserHTTP.isTransientError(e)) {
+						for (let entry of [...pending.values()]) {
+							if (entry.resumed && entry.batchID == batchID) {
+								resubmit(entry, e.message);
+							}
+						}
+					}
 					continue;
+				}
+				for (let entry of [...pending.values()]) {
+					if (!entry.resumed || entry.batchID != batchID) {
+						continue;
+					}
+					let result = (data.extract_result || []).find(x => x.data_id == entry.job.dataID);
+					if (!result || result.state == 'waiting-file') {
+						resubmit(entry, `batch ${batchID} has no file for it`);
+					}
 				}
 				for (let result of data.extract_result || []) {
 					let entry = pending.get(result.data_id);
@@ -593,7 +706,13 @@ AgentParserBackends.CloudV4 = class {
 						}
 						catch (e) {
 							checkCancelled();
-							await batch.onFailed(entry.job, e);
+							// Results from before a restart may have expired
+							if (entry.resumed) {
+								resubmit(entry, e.message);
+							}
+							else {
+								await batch.onFailed(entry.job, e);
+							}
 							continue;
 						}
 						await batch.onDone(entry.job, parserInfo);
@@ -700,6 +819,7 @@ AgentParserBackends.CloudV4 = class {
 			throw new Error("MinerU API did not return a task ID");
 		}
 		Zotero.debug(`Agent Parser: Created MinerU URL task ${taskID}`);
+		this._submitted(job, { kind: 'task', id: taskID, mode: 'url' });
 		
 		let result = await AgentParserBackends.poll(job, async () => {
 			let result = this._check(await AgentParserHTTP.json(
@@ -743,6 +863,7 @@ AgentParserBackends.CloudV4 = class {
 			accelerate: this.uploadAcceleration,
 			checkCancelled: () => job.checkCancelled()
 		});
+		this._submitted(job, { kind: 'batch', id: batchID, mode: 'upload' });
 		
 		let result = await AgentParserBackends.poll(job, async () => {
 			let data = this._check(await AgentParserHTTP.json(

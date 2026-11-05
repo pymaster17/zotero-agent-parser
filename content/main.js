@@ -247,7 +247,8 @@ AgentParser = {
 					backend: AgentParserBackends.classFor(entry.backend) ? entry.backend : null,
 					model: entry.model || null,
 					ocr: typeof entry.ocr == 'boolean' ? entry.ocr : null,
-					fallbackReason: entry.fallbackReason || null
+					fallbackReason: entry.fallbackReason || null,
+					remote: entry.remote && typeof entry.remote == 'object' ? entry.remote : null
 				});
 			}
 		}
@@ -292,7 +293,9 @@ AgentParser = {
 				backend: x.backend || null,
 				model: x.model || null,
 				ocr: typeof x.ocr == 'boolean' ? x.ocr : null,
-				fallbackReason: x.fallbackReason || null
+				fallbackReason: x.fallbackReason || null,
+				// What the service already has, so that it isn't submitted again after a restart
+				remote: x.remote || null
 			}));
 		this.setPref('queue', JSON.stringify(entries));
 	},
@@ -632,7 +635,12 @@ AgentParser = {
 			fileSize: (await IOUtils.stat(filePath)).size,
 			sha256,
 			stagingDir,
-			tempDir
+			tempDir,
+			resume: job.remote || null,
+			onSubmitted: (remote) => {
+				job.remote = remote;
+				this._persistQueue();
+			}
 		};
 		job.status = 'queued';
 		return ctx;
