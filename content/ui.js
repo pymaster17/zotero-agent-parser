@@ -32,6 +32,7 @@ var AgentParserUI = {
 		this._unlisten = plugin.onChange(() => this._onChange());
 		this._loadTooltips();
 		this._loadProviderNames();
+		this._unlistenProviders = AgentParserProviders.onChange(() => this._loadProviderNames());
 
 		this._columnKey = Zotero.ItemTreeManager.registerColumn({
 			pluginID: plugin.id,
@@ -93,6 +94,8 @@ var AgentParserUI = {
 	unregister() {
 		this._unlisten?.();
 		this._unlisten = null;
+		this._unlistenProviders?.();
+		this._unlistenProviders = null;
 		if (this._columnKey) {
 			Zotero.ItemTreeManager.unregisterColumn(this._columnKey);
 			this._columnKey = null;
@@ -119,7 +122,7 @@ var AgentParserUI = {
 
 	async _loadProviderNames() {
 		for (let provider of AgentParserProviders.list()) {
-			this._providerNames[provider.id] = await this.plugin.getString(provider.l10n.name);
+			this._providerNames[provider.id] = await this.plugin.getProviderName(provider.id);
 		}
 	},
 
@@ -503,7 +506,7 @@ var AgentParserUI = {
 		};
 		if (light == 'error' && summary.setupIssue && !summary.failed) {
 			// The provider describes what's missing
-			this.plugin.getString(summary.setupIssue.id)
+			this.plugin.getString(summary.setupIssue.id, summary.setupIssue.args)
 				.then(issue => win.document.l10n.setAttributes(button, 'agentparser-light-setup-button', { issue }))
 				.catch(() => {});
 		}
@@ -599,7 +602,7 @@ var AgentParserUI = {
 		// Setup needed
 		if (summary.setupIssue) {
 			let box = el('div', 'agentparser-panel-notice');
-			box.append(icon('setup'), el('span', null, summary.setupIssue.id));
+			box.append(icon('setup'), el('span', null, summary.setupIssue.id, summary.setupIssue.args));
 			if (!summary.setupIssue.installing) {
 				let open = el('a', 'agentparser-panel-link', 'agentparser-panel-open-settings');
 				open.addEventListener('click', () => {

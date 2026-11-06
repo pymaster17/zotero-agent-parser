@@ -1,4 +1,4 @@
-/* global Zotero, AgentParserHTTP, AgentParserProviders, TextEncoder */
+/* global Zotero, AgentParserHTTP, AgentParserProviders */
 
 /**
  * PaddleOCR (Baidu AI Studio async API, PaddleOCR-VL models)
@@ -195,7 +195,7 @@ AgentParserPaddleOCR.Backend = class {
 	 */
 	async _submitUpload(job) {
 		job.onStatus('uploading');
-		let body = this._multipart({
+		let body = AgentParserProviders.multipart({
 			model: this.model,
 			optionalPayload: JSON.stringify(this._options())
 		}, job.uploadName, await AgentParserProviders.readFile(job.filePath));
@@ -240,32 +240,6 @@ AgentParserPaddleOCR.Backend = class {
 			submittedAt: Date.now()
 		});
 		return String(jobID);
-	}
-
-	/**
-	 * multipart/form-data body, built by hand so that it doesn't depend on FormData being
-	 * available in the plugin's scope
-	 */
-	_multipart(fields, fileName, fileData) {
-		let boundary = '----AgentParser' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-		let encoder = new TextEncoder();
-		let parts = [];
-		for (let [name, value] of Object.entries(fields)) {
-			parts.push(encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
-		}
-		let safeName = (fileName || 'document.pdf').replace(/["\r\n\\]/g, '_');
-		parts.push(encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeName}"\r\n`
-			+ 'Content-Type: application/pdf\r\n\r\n'));
-		parts.push(fileData);
-		parts.push(encoder.encode(`\r\n--${boundary}--\r\n`));
-		let length = parts.reduce((sum, x) => sum + x.length, 0);
-		let data = new Uint8Array(length);
-		let offset = 0;
-		for (let part of parts) {
-			data.set(part, offset);
-			offset += part.length;
-		}
-		return { data, contentType: `multipart/form-data; boundary=${boundary}` };
 	}
 
 	/**
@@ -418,7 +392,6 @@ AgentParserPaddleOCR.Markdown = {
 AgentParserProviders.register({
 	apiVersion: 1,
 	id: 'paddleocr',
-	kind: 'cloud',
 	ftl: 'agent-parser-paddleocr.ftl',
 	l10n: {
 		name: 'agentparser-provider-paddleocr',

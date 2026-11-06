@@ -1,9 +1,12 @@
 #!/bin/sh
-# Write updates.json (full edition) and updates-lite.json (lite edition) for the .xpi files in
-# build/, pointing at the GitHub release for the current version
+# Write updates.json for build/agent-parser-<version>.xpi, pointing at the GitHub release for the
+# current version
 #
-# Run after ./build.sh, then upload exactly those .xpi files to the release, since the manifests
-# record their hashes.
+# Run after ./build.sh, then upload exactly that .xpi file to the release, since the manifest
+# records its hash.
+#
+# Versions up to 0.1.7 also had a Lite edition, which checks updates-lite.json. That manifest now
+# points at the same .xpi, which moves those installs over to updates.json.
 set -e
 cd "$(dirname "$0")"
 REPO=pymaster17/zotero-agent-parser
@@ -42,4 +45,4 @@ EOF
 }
 
 write_manifest agent-parser updates.json
-write_manifest agent-parser-lite updates-lite.json
+write_manifest agent-parser updates-lite.json

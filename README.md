@@ -2,74 +2,50 @@
 
 一个 Zotero 插件（Zotero 7 及以上），在添加新条目时自动把 PDF 交给 MinerU 或 PaddleOCR 解析成 Markdown，方便 agent 直接读取。解析产物放在 PDF 所在的附件目录里，通过 WebDAV 同步到其他电脑。
 
-## 版本与安装
+## 安装
 
-插件分两个版本，按需选择：
-
-| 版本 | 文件 | 内容 |
-|---|---|---|
-| 轻量版 Agent Parser Lite | `agent-parser-lite-<版本>.xpi` | 只用云端服务（MinerU 云端、PaddleOCR），不含本地 MinerU 的安装和服务管理 |
-| 完整版 Agent Parser | `agent-parser-<版本>.xpi` | 云端服务 + 本地 MinerU |
-
-两个版本的插件本体都只有几十 KB。完整版只有在设置页点「安装」后，才会下载 Python 环境和模型（约 4.8 GB）。两个版本共用同一个插件 ID 和设置，装其中一个会替换另一个，Token 等设置会保留。
+插件只有一个版本，本体只有几十 KB。它自带两个开箱即用的云端服务，不安装、不运行任何模型；自己部署的模型通过[自定义解析服务](docs/custom-providers.md)接入。
 
 ```sh
-./build.sh          # 同时生成 build/agent-parser-<版本>.xpi 和 build/agent-parser-lite-<版本>.xpi
-./build.sh lite     # 只打包轻量版
-./build.sh full     # 只打包完整版
+./build.sh          # 生成 build/agent-parser-<版本>.xpi
 ```
 
-在 Zotero 中打开「工具 → 插件」，点右上角齿轮选「从文件安装插件…」，选择对应的 `.xpi`。
+在 Zotero 中打开「工具 → 插件」，点右上角齿轮选「从文件安装插件…」，选择 `.xpi`。
+
+0.1.7 及以前分为轻量版和完整版，两者使用同一个插件 ID，更新后都会变成这个版本，设置保留。完整版装好的 MinerU 环境不会被删除：自己启动它，再放入示例脚本 [`mineru-tasks-api.js`](examples/providers/mineru-tasks-api.js)，就能继续使用，原来的设置和排队中的文件都会沿用（见[说明](docs/custom-providers.md#用-mineru-部署本地服务)）。
 
 发布新版本：
 
 1. 修改 `manifest.json` 中的 `version`。
 2. 运行 `./build.sh && ./update-manifests.sh`。
-3. 提交并推送 `updates.json` 和 `updates-lite.json`。
-4. 创建 `v<版本>` Release，上传 `build/` 中的两个 `.xpi`。清单里记录了文件哈希，所以上传的必须正是这一步生成的文件。
+3. 提交并推送 `updates.json` 和 `updates-lite.json`（后者供旧的轻量版升级用，指向同一个文件）。
+4. 创建 `v<版本>` Release，上传 `build/agent-parser-<版本>.xpi`。清单里记录了文件哈希，所以上传的必须正是这一步生成的文件。
 
 ## 解析方式
 
-在「设置 → Agent Parser」中选择默认解析服务（轻量版没有本地 MinerU）：
+在「设置 → Agent Parser」中选择默认解析服务。插件自带两个云端服务：
 
-| 方式 | 说明 | 需要配置 |
+| 服务 | 说明 | 需要配置 |
 |---|---|---|
-| 云端（mineru.net v4 API） | 速度快，不占本机资源，消耗解析额度 | 在 mineru.net API 管理页申请的 Token |
+| MinerU 云端（mineru.net v4 API） | 速度快，不占本机资源，消耗解析额度 | 在 mineru.net API 管理页申请的 Token |
 | PaddleOCR（百度飞桨星河社区 API） | 每个模型每天免费 20000 页；**仅建议中国大陆用户使用**，见下文 | 在 aistudio.baidu.com「访问令牌」页面获取的令牌 |
-| 本地（在本机运行 MinerU） | 不依赖网络和额度，速度取决于本机硬件 | 点「安装」构建环境并下载模型 |
 
 右键菜单里可以临时改用其他服务重新解析 PDF，例如「用 PaddleOCR（百度）重新解析」。
 
-**本地模式下的批量请求**：整库解析、多选条目这类批量请求，默认改走云端批处理，前提是填了 Token。原因是本地逐篇处理太慢：M4 上 standard 档一篇论文约 1 分钟。可以在设置中取消「大批量请求使用云端批处理接口」。
+**大批量请求**：整库解析、多选条目这类请求，可以交给支持批处理的服务（目前是 MinerU 云端），而默认服务用别的（例如较慢的本地模型）。在设置中选择「大批量请求使用」。
 
-### 本地 MinerU
+### 自定义解析服务
 
-勾选「由 Agent Parser 安装并运行 MinerU」（默认勾选）后，点「安装」，插件会依次完成：
+自己部署的模型（本机或局域网内的服务）通过解析服务脚本接入：把脚本放进 Zotero 数据目录下的 `agent-parser/providers/`（设置页「自定义解析服务」中有「打开文件夹」按钮），重启 Zotero 即可。每个脚本可以注册一个或多个服务，它们和自带服务用的是同一套接口，在设置页有自己的一栏，也会出现在「解析方式」和右键菜单中。插件不负责安装和运行模型，部署方式由你决定。
 
-1. 创建 Python 3.12 虚拟环境，默认位置是 `~/.zotero-agent-parser/mineru-env`。优先用 [uv](https://docs.astral.sh/uv/) 创建；没有 uv 时，退回到系统的 Python 3.11–3.14 和 `venv`。
-2. 安装 `mineru>=4.1,<5`。在 Apple Silicon 上还会额外安装 MLX 推理引擎（`mineru-vl-utils[mlx]`），实测比 MinerU 在 Mac 上默认选的 llama.cpp 快约 1.5 倍。
-3. 按所选档位下载模型，存放在 MinerU 的默认位置 `~/.mineru/models`，可以和其他 MinerU 安装共用。
+[examples/providers/](examples/providers/) 中有两个可以直接改的示例：
 
-全部下载约 4.8 GB，其中 Python 环境约 1.7 GB、模型约 3 GB。basic 档不需要 VLM，约 2.6 GB。安装过程和日志在设置页中实时显示，可以随时取消；之后点「更新 / 修复」可以升级 MinerU 或补齐缺失的模型。模型下载慢时，可以把「模型来源」改为 ModelScope。
+- [`mineru-tasks-api.js`](examples/providers/mineru-tasks-api.js)：连接自己运行的 `mineru-kit api-server`（MinerU ≥ 4）。服务没启动时文件留在队列里，状态灯提示服务未运行，服务启动后自动继续。
+- [`simple-http.js`](examples/providers/simple-http.js)：连接任何包装成最简 HTTP 接口（上传 PDF，返回 Markdown / ZIP / JSON）的模型，文件开头可以配置多个实例。
 
-解析时插件会自动启动 `mineru-kit api-server`，只监听 127.0.0.1，并带上这些设置：
+编写说明、接口定义和 MinerU 部署示例见 [docs/custom-providers.md](docs/custom-providers.md)。
 
-- 一次只处理一个任务。MLX 推理本身是串行的，实测两篇同时跑并不会更快。
-- 关闭图片分析。这项功能会把图转成 mermaid 流程图，对 agent 用处不大，而且在复杂框图上可能陷入重复生成。
-
-服务空闲 15 分钟后自动停止，释放约 3 GB 内存；时长可在设置中调整，设为 0 表示不停止。Zotero 退出时，服务也会一起停止。
-
-档位（M4 16 GB、MLX 实测，3 篇 arXiv 论文共 56 页）：
-
-| 档位 | 速度 | 说明 |
-|---|---|---|
-| basic | 最快 | 只用小模型，公式和复杂版面质量最低 |
-| standard（默认） | 约 3.5 秒/页 | 小模型做版面分析，VLM 识别文本、公式和表格 |
-| advanced | 约 13 秒/页 | 版面也交给 VLM，表格多的文档质量更好 |
-
-如果想用自己运行的 MinerU 服务（本机或局域网内的其他电脑），取消「由 Agent Parser 安装并运行 MinerU」，然后填写服务地址和 API Key。服务需为 `mineru-kit api-server`，MinerU 版本 ≥ 4。
-
-### 云端
+### MinerU 云端
 
 **URL 直传**：从白名单域名保存的 PDF，插件会把附件记录的下载地址直接交给 MinerU，由服务端自己下载，省去上传时间。提交前插件会先请求一次该地址，确认返回的是 PDF 且大小与本地文件一致；不满足条件，或 MinerU 下载/解析失败时，自动改为上传本地文件。`full.md` 的 YAML 中 `parser_input` 记录了实际使用的方式。
 
@@ -82,17 +58,17 @@
 - **工具栏状态灯**（同步按钮左侧）只用来显示状态：
   - 绿色 ✓：没有解析任务
   - 黄色（转动）：正在解析，角标为进行中和排队的数量
-  - 红色 !：出现异常，包括解析失败（角标为失败数量）和需要完成设置（未填写 Token，或本地 MinerU 尚未安装）。需要设置时，新的 PDF 会留在队列里，设置完成后自动开始
+  - 红色 !：出现异常，包括解析失败（角标为失败数量）和需要完成设置（未填写 Token，或自定义服务未运行）。需要设置时，新的 PDF 会留在队列里，设置完成后自动开始
 
-  点击状态灯会弹出详情：云端和本地各自的进行中、排队、稍后重试、等待设置数量，每个正在解析的文件及其阶段（上传、在服务端排队、解析、保存），以及失败的文件和原因。点击文件可以定位到对应条目。
+  点击状态灯会弹出详情：每个服务各自的进行中、排队、稍后重试、等待设置数量，每个正在解析的文件及其阶段（上传、在服务端排队、解析、保存），以及失败的文件和原因。点击文件可以定位到对应条目。
 - **条目列表的「Agent Parser」列**：安装后自动显示在列表最右侧（之后可以在列标题上右键隐藏或再次显示），每个条目显示 ✓（已解析）、!（失败）、转圈（解析中）、时钟（排队）、⚠（等待设置）或虚线圆圈（未解析）。点击列标题可按状态排序，失败的排在最前。
-- **条目面板的「Agent 解析」栏**：显示所选条目每个 PDF 的状态、进度或错误信息，并提供「重试」「改用云端 / 本地重试」「打开 Markdown」「在文件夹中显示」「重新解析」等按钮。
+- **条目面板的「Agent 解析」栏**：显示所选条目每个 PDF 的状态、进度或错误信息，并提供「重试」「改用其他服务重试」「打开 Markdown」「在文件夹中显示」「重新解析」等按钮。
 - **通知**：解析完成（✅）和失败（❌）时右下角弹出提示，可在设置中关闭。
 - **设置页顶部的「状态」栏**：显示设置是否完成、队列和失败数量，可一键跳到需要填写的位置。首次安装时如果还没有设置，会自动打开设置页。
 
 失败记录会保存下来，重启 Zotero 后仍然可见，直到重试成功或手动清除。
 
-**超出服务限制**是一类单独的失败：云端只接受 200 MB / 200 页以内的文件。插件提交前会先检查大小和页数，超出的直接标为「超出服务限制」，不再上传；服务端返回的同类错误也按此处理。因为重试一定会再次失败，设置页的「重试失败项」会跳过它们，条目面板里提供「用本地 MinerU 解析」（完整版）。本地模式下，被分流到云端批处理的大批量请求遇到这种文件时，会自动退回本地解析，不记为失败。
+**超出服务限制**是一类单独的失败：每个服务都可以声明文件大小和页数上限（例如 MinerU 云端是 200 MB / 200 页）。插件提交前会先检查大小和页数，超出的直接标为「超出服务限制」，不再上传；服务端返回的同类错误也按此处理。因为重试一定会再次失败，设置页的「重试失败项」会跳过它们，条目面板里提供改用其他服务解析的按钮。大批量请求被分流到批处理服务时遇到这种文件，会自动退回默认服务解析，不记为失败。
 
 ## 触发方式
 
@@ -147,11 +123,11 @@
 
 ## 注意
 
-- 本地服务产出的 `markdown.md` 和云端的 `full.md` 会统一整理成 `full.md`；YAML 中的 `parser` 字段为 `mineru-local` 或 `mineru-cloud-v4`。
+- 各服务产出的 Markdown 都会统一整理成 `full.md`；YAML 中的 `parser` 字段记录所用的服务（如 `mineru-cloud-v4`、`paddleocr`）。
 - API Token 和 Key 以明文保存在 Zotero 配置目录的 `prefs.js` 中。
-- 云端 v4 API 对单个文件的限制是 200 MB / 200 页。超出的 PDF 在提交前就会标为「超出服务限制」，不会上传。需要解析长文档时，可以先拆分 PDF，或改用本地 MinerU。
+- 云端 v4 API 对单个文件的限制是 200 MB / 200 页。超出的 PDF 在提交前就会标为「超出服务限制」，不会上传。需要解析长文档时，可以先拆分 PDF，或改用限制更宽的服务。
 - 上传给服务端的文件名统一为 `<附件键>.pdf`，以避开非 ASCII 文件名带来的问题；原文件名会记录在 `full.md` 开头的 YAML 中。
-- 自动更新：完整版读取仓库根目录的 `updates.json`，轻量版读取 `updates-lite.json`，两个版本各自更新，不会互相切换。
+- 自动更新读取仓库根目录的 `updates.json`；旧的轻量版读取 `updates-lite.json`，它指向同一个文件，更新一次后就会改用 `updates.json`。
 
 ### PaddleOCR（百度）
 
@@ -165,27 +141,28 @@
 
 ## 代码结构：解析服务（provider）
 
-插件本体（队列、路由、产物整理、状态界面、设置页框架）不依赖任何具体的解析服务。每个服务是 `content/providers/<id>/` 下的一个模块，向 `AgentParserProviders` 注册一个描述对象，接口定义见 [content/providers.js](content/providers.js)。
+插件本体（队列、路由、产物整理、状态界面、设置页框架）不依赖任何具体的解析服务，也不区分云端和本地。每个服务向 `AgentParserProviders` 注册一个描述对象，接口定义见 [content/providers.js](content/providers.js)，编写说明见 [docs/custom-providers.md](docs/custom-providers.md)。服务有三种来源：
+
+| 来源 | 位置 |
+|---|---|
+| 插件自带 | `content/providers/<id>/`，在 [content/providers/index.js](content/providers/index.js) 中列出 |
+| 用户脚本 | Zotero 数据目录下的 `agent-parser/providers/*.js`，启动时加载 |
+| 其他插件 | 调用 `Zotero.AgentParser.providers.register()` / `unregister()`，随时注册和注销 |
+
+自带的服务：
 
 | 模块 | 内容 |
 |---|---|
 | `mineru-cloud` | mineru.net v4 API：URL 直传、上传加速、批处理、重启后续接、vlm → OCR → pipeline 的重复输出回退 |
 | `paddleocr` | 百度飞桨星河社区 PaddleOCR-VL API：multipart 上传、可选 URL 直传、重启后续接、结果整理成 MinerU 的格式 |
-| `mineru-local` | 本地 MinerU：安装与服务管理（`runtime.js`）、Tasks API 客户端（`tasks.js`） |
 
 每个服务自己声明：
+- 名称（字符串，或 Fluent 语言文件 `locale/<语言>/agent-parser-<id>.ftl`）；
 - 默认设置（存放在 `extensions.agentparser.providers.<id>.*`）和旧设置名的迁移；
 - 文件大小、页数限制，并发数，是否支持批处理；
-- 设置是否完整（缺 Token、未安装等）；
-- 错误分类：`busy` 稍后重试，`limit` 超出限制，`error` 普通失败；
+- 设置是否完整（缺 Token、服务未运行等），不完整时它的文件留在队列中；
+- 错误分类：`busy` 稍后重试，`unavailable` 等服务恢复，`limit` 超出限制，`error` 普通失败；
 - 输出重复时的回退方案，以及写入 `full.md` YAML 的字段；
-- 设置页中自己的一节（XHTML 片段和脚本）和语言文件 `locale/<语言>/agent-parser-<id>.ftl`。
+- 设置页中自己的一栏：声明字段自动生成，或用 XHTML 片段和脚本。
 
 服务需要把结果整理成一个 Markdown 文件加 `images/` 目录，放在给定的目录中，并用统一的进度阶段（`preparing`、`uploading`、`pending`、`parsing`、`downloading`）报告进度。
-
-新增服务的步骤：
-1. 新建 `content/providers/<id>/`，在 `provider.js` 中注册描述对象。
-2. 在 [content/providers/index.js](content/providers/index.js) 中加入这个模块。
-3. 添加两种语言的 `agent-parser-<id>.ftl`。
-
-版本之间的差别只是打包哪些服务：轻量版就是去掉 `mineru-local` 的完整版。

@@ -7,5 +7,4 @@
 var AgentParserBundledProviders = [
 	{ dir: 'mineru-cloud', scripts: ['provider.js'] },
 	{ dir: 'paddleocr', scripts: ['provider.js'] },
-	{ dir: 'mineru-local', scripts: ['runtime.js', 'tasks.js', 'provider.js'] },
 ];

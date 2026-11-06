@@ -4,7 +4,8 @@
  * Agent Parser settings
  *
  * The core settings (status, which service parses what, general options, output) are in
- * preferences.xhtml. Each provider brings its own section: an XHTML fragment and a script that
+ * preferences.xhtml. Each provider brings its own section: fields declared in its descriptor
+ * (settings.fields), which are bound to its prefs, and/or an XHTML fragment and a script that
  * defines AgentParserProviderSettings[<provider ID>] = { init(ctx), refresh(), update() }, where
  * ctx = { plugin, provider, container }.
  */
@@ -81,16 +82,23 @@ window.AgentParserPrefs = {
 		let providers = this._providers;
 		let names = {};
 		for (let provider of providers) {
-			names[provider.id] = await plugin.getString(provider.l10n.name);
+			names[provider.id] = await plugin.getProviderName(provider.id);
 		}
 
 		// Bind the prefs only once the choices exist, so that the current value gets selected
 		let radiogroup = document.getElementById('agentparser-default-provider');
 		radiogroup.removeAttribute('preference');
-		radiogroup.replaceChildren(...providers.map((provider) => {
+		let choices = providers.map(x => x.id);
+		// A service that isn't loaded (e.g., a custom provider whose script is gone) stays visible
+		let current = plugin.getDefaultProvider();
+		if (current && !choices.includes(current)) {
+			choices.push(current);
+			names[current] = await plugin.getString('agentparser-pref-provider-missing', { provider: current });
+		}
+		radiogroup.replaceChildren(...choices.map((id) => {
 			let radio = document.createXULElement('radio');
-			radio.setAttribute('value', provider.id);
-			radio.setAttribute('label', names[provider.id]);
+			radio.setAttribute('value', id);
+			radio.setAttribute('label', names[id]);
 			return radio;
 		}));
 		radiogroup.setAttribute('preference', 'extensions.agentparser.defaultProvider');
@@ -111,7 +119,7 @@ window.AgentParserPrefs = {
 		menulist.setAttribute('preference', 'extensions.agentparser.bulkProvider');
 
 		// With a single service there's nothing to choose
-		let single = providers.length < 2;
+		let single = choices.length < 2;
 		radiogroup.hidden = single;
 		document.getElementById('agentparser-bulk-row').hidden = single || !batchProviders.length;
 		document.getElementById('agentparser-single-provider-desc').hidden = !single;
@@ -152,16 +160,31 @@ window.AgentParserPrefs = {
 				section.id = 'agentparser-provider-' + provider.id;
 				let heading = document.createXULElement('label');
 				let h2 = document.createElementNS('http://www.w3.org/1999/xhtml', 'h2');
-				document.l10n.setAttributes(h2, provider.l10n.name);
+				h2.textContent = await plugin.getProviderName(provider.id);
 				heading.append(h2);
 				section.append(heading);
-
-				let markup = await Zotero.File.getContentsFromURLAsync(plugin.rootURI + provider.settings.fragment);
-				section.append(window.MozXULElement.parseXULToFragment(markup));
 				container.append(section);
 
-				if (provider.settings.script) {
-					Services.scriptloader.loadSubScript(plugin.rootURI + provider.settings.script, window);
+				let { fields, fragment, script, description, test } = provider.settings;
+				let base = provider.rootURI || plugin.rootURI;
+				let resolve = path => (/^[a-z][a-z0-9+.-]*:/i.test(path) ? path : base + path);
+				if (description) {
+					let desc = document.createXULElement('description');
+					desc.textContent = plugin.providers.localize(description);
+					section.append(desc);
+				}
+				if (fields?.length) {
+					section.append(this._renderFields(plugin, provider, fields));
+				}
+				if (fragment) {
+					let markup = await Zotero.File.getContentsFromURLAsync(resolve(fragment));
+					section.append(window.MozXULElement.parseXULToFragment(markup));
+				}
+				if (test) {
+					section.append(this._renderTestButton(plugin, provider));
+				}
+				if (script) {
+					Services.scriptloader.loadSubScript(resolve(script), window);
 					await window.AgentParserProviderSettings[provider.id]?.init?.({
 						plugin,
 						provider,
@@ -173,6 +196,140 @@ window.AgentParserPrefs = {
 				Zotero.logError(e);
 			}
 		}
+		this._renderUserScripts();
+	},
+
+
+	/**
+	 * Form for a provider's declared fields, bound to its prefs
+	 *
+	 * @param {Object[]} fields - { pref, label, type, options, description, placeholder }, where
+	 *     type is 'text' (default), 'password', 'number', 'checkbox' or 'menulist', and options
+	 *     (for menulist) is [{ value, label }]
+	 */
+	_renderFields(plugin, provider, fields) {
+		let localize = value => plugin.providers.localize(value);
+		let fragment = document.createDocumentFragment();
+		let grid = document.createXULElement('grid');
+		grid.className = 'form-grid';
+		let notes = [];
+		for (let field of fields) {
+			let prefName = plugin.providers.prefName(provider.id, field.pref);
+			let id = `agentparser-${provider.id}-${field.pref}`.replace(/[^a-z0-9_-]/gi, '_');
+			if (field.type == 'checkbox') {
+				let checkbox = document.createXULElement('checkbox');
+				checkbox.id = id;
+				checkbox.setAttribute('native', 'true');
+				checkbox.setAttribute('label', localize(field.label));
+				checkbox.setAttribute('preference', prefName);
+				notes.push(checkbox);
+			}
+			else {
+				let label = document.createElementNS('http://www.w3.org/1999/xhtml', 'label');
+				label.setAttribute('for', id);
+				label.textContent = localize(field.label);
+				let input;
+				if (field.type == 'menulist') {
+					input = document.createXULElement('menulist');
+					input.setAttribute('native', 'true');
+					let popup = document.createXULElement('menupopup');
+					for (let option of field.options || []) {
+						let item = document.createXULElement('menuitem');
+						item.setAttribute('value', String(option.value));
+						item.setAttribute('label', localize(option.label ?? String(option.value)));
+						popup.append(item);
+					}
+					input.append(popup);
+				}
+				else {
+					input = document.createElementNS('http://www.w3.org/1999/xhtml', 'input');
+					input.type = ['password', 'number'].includes(field.type) ? field.type : 'text';
+					input.style.flex = field.type == 'number' ? '' : '1';
+					if (field.type == 'number') {
+						input.style.width = '6em';
+					}
+					if (field.placeholder) {
+						input.placeholder = localize(field.placeholder);
+					}
+				}
+				input.id = id;
+				input.setAttribute('preference', prefName);
+				if (field.setupFocus) {
+					input.setAttribute('data-setup-focus', 'true');
+				}
+				grid.append(label, input);
+			}
+			if (field.description) {
+				let desc = document.createXULElement('description');
+				desc.textContent = localize(field.description);
+				notes.push(desc);
+			}
+		}
+		fragment.append(grid, ...notes);
+		return fragment;
+	},
+
+
+	_renderTestButton(plugin, provider) {
+		let box = document.createXULElement('hbox');
+		box.setAttribute('align', 'center');
+		let button = document.createXULElement('button');
+		document.l10n.setAttributes(button, 'agentparser-pref-test');
+		let result = document.createXULElement('label');
+		result.setAttribute('flex', '1');
+		result.setAttribute('crop', 'end');
+		button.addEventListener('command', async () => {
+			result.value = '…';
+			try {
+				result.value = '✅ ' + await plugin.createBackend(provider.id).test();
+			}
+			catch (e) {
+				result.value = '❌ ' + (e.message || e);
+			}
+			// Start files that were waiting for the service, or hold them if it's down
+			plugin.refreshSetup(provider.id);
+		});
+		box.append(button, result);
+		return box;
+	},
+
+
+	/**
+	 * Scripts in the user's provider folder, and what they registered
+	 */
+	_renderUserScripts() {
+		let plugin = this._plugin;
+		let list = document.getElementById('agentparser-custom-list');
+		let path = document.getElementById('agentparser-custom-dir');
+		if (!plugin || !list) {
+			return;
+		}
+		path.textContent = plugin.providers.getUserDir();
+		let scripts = plugin.providers.userScripts;
+		if (!scripts.length) {
+			let empty = document.createXULElement('description');
+			document.l10n.setAttributes(empty, 'agentparser-pref-custom-none');
+			list.replaceChildren(empty);
+			return;
+		}
+		list.replaceChildren(...scripts.map((script) => {
+			let row = document.createXULElement('description');
+			if (script.error) {
+				document.l10n.setAttributes(row, 'agentparser-pref-custom-error', { file: script.file, error: script.error });
+				row.style.color = 'var(--accent-red, #d70022)';
+			}
+			else {
+				document.l10n.setAttributes(row, 'agentparser-pref-custom-loaded', { file: script.file, ids: script.ids.join(', ') });
+			}
+			return row;
+		}));
+	},
+
+
+	async openUserDir() {
+		let dir = this._plugin.providers.getUserDir();
+		await IOUtils.makeDirectory(dir, { createAncestors: true, ignoreExisting: true });
+		Zotero.File.reveal(dir);
 	},
 
 
@@ -186,7 +343,7 @@ window.AgentParserPrefs = {
 		let { queued, running } = plugin.getStatus();
 		let names = {};
 		for (let provider of this._providers) {
-			names[provider.id] = await plugin.getString(provider.l10n.name);
+			names[provider.id] = await plugin.getProviderName(provider.id);
 		}
 		label.value = await plugin.getString('agentparser-pref-queue-status', {
 			queued,
@@ -212,17 +369,21 @@ window.AgentParserPrefs = {
 		let text = document.getElementById('agentparser-status-text');
 		let iconName;
 		let textID;
+		let textArgs = {};
 		if (summary.setupIssue) {
 			iconName = 'warning';
 			textID = summary.setupIssue.id;
+			textArgs = summary.setupIssue.args || {};
 		}
 		else {
 			iconName = summary.autoParse ? 'done' : 'none';
 			textID = summary.autoParse ? 'agentparser-pref-status-ok' : 'agentparser-pref-status-paused';
 		}
 		icon.src = `chrome://agentparser/content/icons/${iconName}.svg`;
-		if (text.getAttribute('data-l10n-id') != textID) {
-			document.l10n.setAttributes(text, textID);
+		let args = JSON.stringify(textArgs);
+		if (text.getAttribute('data-l10n-id') != textID || text.dataset.args != args) {
+			text.dataset.args = args;
+			document.l10n.setAttributes(text, textID, textArgs);
 		}
 		document.getElementById('agentparser-status-setup').hidden = !summary.setupIssue
 			|| summary.setupIssue.installing;

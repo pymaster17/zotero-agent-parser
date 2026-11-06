@@ -49,8 +49,21 @@
 		<html:span id="agentparser-routing-warning" style="color: var(--accent-red, #d70022)" hidden="hidden"/>
 	</groupbox>
 
-	<!-- One section per parsing service, from content/providers/<id>/settings.xhtml -->
+	<!-- One section per parsing service, from its descriptor's settings -->
 	<vbox id="agentparser-provider-sections"/>
+
+	<!-- The user's own providers -->
+	<groupbox id="agentparser-custom-providers">
+		<label><html:h2 data-l10n-id="agentparser-pref-custom-title"/></label>
+		<description data-l10n-id="agentparser-pref-custom-desc"/>
+		<html:code id="agentparser-custom-dir" style="user-select: text; overflow-wrap: anywhere;"/>
+		<vbox id="agentparser-custom-list"/>
+		<hbox align="center">
+			<button data-l10n-id="agentparser-pref-custom-open" oncommand="AgentParserPrefs.openUserDir()"/>
+			<html:a class="text-link" data-l10n-id="agentparser-pref-custom-docs"
+				href="https://github.com/pymaster17/zotero-agent-parser/blob/main/docs/custom-providers.md"/>
+		</hbox>
+	</groupbox>
 
 	<groupbox>
 		<label><html:h2 data-l10n-id="agentparser-pref-general"/></label>

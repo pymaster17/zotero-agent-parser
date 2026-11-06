@@ -125,7 +125,7 @@ agentparser-panel-failure-hint = Click a file to find it in the item list, then 
 ## Parsing services
 
 agentparser-pref-mode-desc = New items are parsed with the service chosen here. You can also reparse items with a specific service from the item context menu.
-agentparser-pref-single-provider-desc = This edition includes a single parsing service. To parse with MinerU on this computer, install the full edition; your settings are kept.
+agentparser-pref-single-provider-desc = Only one parsing service is available. You can add services you run yourself under Custom Parsing Services below.
 agentparser-pref-bulk-provider = Large requests (whole library, multiple items) use:
 agentparser-pref-bulk-provider-default =
     .label = The default service
@@ -139,6 +139,16 @@ agentparser-limit-desc = This service doesn’t accept the file, so retrying wou
 agentparser-limit-desc-single = The service doesn’t accept this file, so retrying would fail too. Split the PDF and add it again.
 agentparser-notify-limit-hint = Retrying would fail too. Parse it with another service from the item’s “Agent Parsing” section, or split the PDF.
 agentparser-notify-limit-hint-single = Retrying would fail too. Split the PDF and add it again.
-agentparser-setup-unavailable = Setup needed: the chosen parsing service isn’t available in this edition
+agentparser-setup-unavailable = Setup needed: the parsing service “{ $provider }” isn’t loaded (a custom service’s script may have been removed or failed)
 agentparser-light-setup-button =
     .tooltiptext = Agent Parser — { $issue }
+agentparser-setup-custom = Setup needed: { $message }
+agentparser-pref-provider-missing = { $provider } (not loaded)
+agentparser-pref-custom-title = Custom Parsing Services
+agentparser-pref-custom-desc = Connect models you run yourself (on this computer or your network): put provider scripts (.js) in the folder below. Each script registers one or more services, and takes effect after restarting Zotero. Scripts run with the same permissions as the plugin, so only add code you trust.
+agentparser-pref-custom-none = No scripts in the folder yet.
+agentparser-pref-custom-loaded = ✅ { $file }: { $ids }
+agentparser-pref-custom-error = ❌ { $file }: { $error }
+agentparser-pref-custom-open =
+    .label = Open Folder
+agentparser-pref-custom-docs = Guide and examples

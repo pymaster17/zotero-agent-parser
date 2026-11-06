@@ -27,7 +27,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + 'content/http.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/output.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/providers.js');
-	// Parsing services in this edition
+	// Parsing services that come with the plugin
 	Services.scriptloader.loadSubScript(rootURI + 'content/providers/index.js');
 	for (let { dir, scripts } of AgentParserBundledProviders) {
 		try {
@@ -55,6 +55,13 @@ async function startup({ id, version, rootURI }) {
 	}
 
 	await Zotero.initializationPromise;
+	// The user's own providers, from the data directory (which is only known now)
+	try {
+		await AgentParserProviders.loadUserProviders();
+	}
+	catch (e) {
+		Zotero.logError(e);
+	}
 	try {
 		AgentParserUI.register();
 	}
@@ -66,7 +73,9 @@ async function startup({ id, version, rootURI }) {
 			AgentParser.addToWindow(win);
 		}
 	}
-	AgentParser.restoreQueue();
+	await AgentParser.restoreQueue();
+	// Other plugins can register providers from now on (Zotero.AgentParser.providers.register())
+	Services.obs.notifyObservers(null, 'agentparser-ready');
 }
 
 function onMainWindowLoad({ window }) {

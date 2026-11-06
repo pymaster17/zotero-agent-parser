@@ -3,18 +3,25 @@
 /**
  * Parsing service providers
  *
- * The core (queue, routing, output, status UI) knows nothing about any particular service. Each
- * provider lives in content/providers/<id>/ and registers a descriptor here:
+ * The core (queue, routing, output, status UI) knows nothing about any particular service. Every
+ * service -- a cloud API or a model the user runs themselves -- is a provider that registers a
+ * descriptor here. They come from three places:
+ *
+ *   - bundled with the plugin: content/providers/<id>/ (MinerU cloud, PaddleOCR)
+ *   - the user's own scripts: <Zotero data directory>/agent-parser/providers/*.js, loaded at
+ *     startup (see loadUserProviders() and docs/custom-providers.md)
+ *   - other Zotero plugins, which can register and unregister at any time:
+ *     Zotero.AgentParser.providers.register(descriptor)
  *
  * {
  *   apiVersion: 1,
  *   id: 'mineru-cloud',                    -- also the prefix of its prefs: providers.<id>.<name>
- *   kind: 'cloud' | 'local',
- *   ftl: 'agent-parser-mineru-cloud.ftl',  -- its strings, including:
- *   l10n: {
- *     name,                                -- short name, e.g. "MinerU Cloud"
- *     confirmBulk,                         -- confirmation before queueing a whole library ($count)
- *   },
+ *   name: 'My service'                     -- display name: a string, or { 'zh-CN': ..., 'en-US': ... }
+ *     or ftl + l10n: {                     -- Fluent strings, for providers with a locale folder
+ *       name,                              -- short name, e.g. "MinerU Cloud"
+ *       confirmBulk,                       -- confirmation before queueing a whole library ($count)
+ *     },
+ *   rootURI,                               -- optional; base for settings paths (default: this plugin)
  *   defaultPrefs: { name: value },          -- set on the default branch when registered
  *   legacy: {                              -- for migrating from before providers existed
  *     ids: ['cloudV4'],                    -- old names in the persisted queue and prefs
@@ -22,25 +29,36 @@
  *   },
  *   limits: { maxPages, maxFileSize },      -- checked before submitting
  *   maxBatch: 50,                          -- if create() returns backends with parseBatch()
- *   settings: { fragment, script },        -- paths relative to the plugin root, see preferences.js
+ *   settings: {                            -- its section in the settings, see preferences.js:
+ *     fields: [{ pref, label, type, options, description }],
+ *                                          -- simple form bound to its prefs, and/or
+ *     fragment, script,                    -- XHTML fragment and script, relative to rootURI
+ *     description,                         -- text above the fields (string or per-locale object)
+ *     test: true,                          -- show a "Test connection" button (backend.test())
+ *   },
  *
  *   init(ctx), shutdown(),                  -- optional
- *   getConcurrency(ctx) -> Number,          -- single-file jobs at once
- *   getSetupIssue(ctx) -> null | { l10nID, installing },
- *                                          -- what's missing before files can be sent to it
+ *   getConcurrency(ctx) -> Number,          -- single-file jobs at once (default 1)
+ *   getSetupIssue(ctx) -> null | { l10nID | message, installing },
+ *                                          -- what's missing before files can be sent to it; files
+ *                                             for it wait in the queue meanwhile
  *   refreshSetup(ctx) -> Promise,           -- optional; recheck what getSetupIssue() reports
- *   classifyError(e) -> 'busy' | 'limit' | 'error',
- *                                          -- busy: try again later; limit: the file is outside
- *                                             the service's limits, so trying again won't help
+ *   classifyError(e) -> 'busy' | 'unavailable' | 'limit' | 'error',
+ *                                          -- busy: try again later; unavailable: the service
+ *                                             isn't running, so queue the file again and report a
+ *                                             setup issue until it is (then call
+ *                                             ctx.plugin.refreshSetup(ctx.id)); limit: the file is
+ *                                             outside the service's limits, so trying again won't
+ *                                             help. Optional (default 'error').
  *   getFallback(parserInfo, variant) -> null | { variant, description },
- *                                          -- another way to parse a file whose output repeated
- *                                             itself
- *   describe(parserInfo) -> String,         -- for log messages
+ *                                          -- optional; another way to parse a file whose output
+ *                                             repeated itself
+ *   describe(parserInfo) -> String,         -- optional; for log messages
  *   frontMatter(parserInfo) -> Object,      -- optional; written to full.md as parser_<name>
  *   create(ctx, variant) -> backend,
  * }
  *
- * ctx = { getPref(name), setPref(name, value), plugin }
+ * ctx = { id, getPref(name), setPref(name, value), plugin }
  *
  * backend.parse(job) leaves the raw results in job.stagingDir (one Markdown file plus images/,
  * see AgentParserOutput.finalize()) and returns an object describing the parser, which goes into
@@ -67,11 +85,19 @@ var AgentParserProviders = {
 	PREF_PREFIX: 'extensions.agentparser.providers.',
 	// Progress phases reported through onStatus(), shown in the status panel and item pane
 	PHASES: ['preparing', 'uploading', 'pending', 'parsing', 'downloading'],
+	// Folder in the Zotero data directory for the user's own providers
+	USER_DIR: ['agent-parser', 'providers'],
 
 	_providers: new Map(),
+	_listeners: new Set(),
+	// { file, ids, error } for each script in the user's folder, from the last loadUserProviders()
+	userScripts: [],
 
 
 	register(descriptor) {
+		if (!descriptor || typeof descriptor.id != 'string' || !/^[a-z0-9][a-z0-9._-]*$/i.test(descriptor.id)) {
+			throw new Error(`Agent Parser: Provider ID must be letters, digits, ".", "_" or "-": ${descriptor && descriptor.id}`);
+		}
 		if (descriptor.apiVersion != this.API_VERSION) {
 			throw new Error(`Agent Parser: Provider ${descriptor.id} uses API version ${descriptor.apiVersion}, `
 				+ `but ${this.API_VERSION} is supported`);
@@ -79,14 +105,59 @@ var AgentParserProviders = {
 		if (this._providers.has(descriptor.id)) {
 			throw new Error(`Agent Parser: Provider ${descriptor.id} is already registered`);
 		}
+		if (typeof descriptor.create != 'function') {
+			throw new Error(`Agent Parser: Provider ${descriptor.id} has no create()`);
+		}
+		if (!descriptor.name && !descriptor.l10n?.name) {
+			throw new Error(`Agent Parser: Provider ${descriptor.id} has no name`);
+		}
 		this._setDefaultPrefs(descriptor);
 		this._migrateLegacyPrefs(descriptor);
 		this._providers.set(descriptor.id, descriptor);
+		this._notify('register', descriptor);
+	},
+
+
+	/**
+	 * Remove a provider, e.g., when the plugin that registered it shuts down. Files queued for it
+	 * wait until it's back.
+	 */
+	unregister(id) {
+		let descriptor = this._providers.get(id);
+		if (!descriptor) {
+			return;
+		}
+		this._providers.delete(id);
+		this._notify('unregister', descriptor);
 	},
 
 
 	unregisterAll() {
 		this._providers.clear();
+		this._listeners.clear();
+		this.userScripts = [];
+	},
+
+
+	/**
+	 * @param {Function} listener - (event, descriptor), where event is 'register' or 'unregister'
+	 * @return {Function} - Removes the listener
+	 */
+	onChange(listener) {
+		this._listeners.add(listener);
+		return () => this._listeners.delete(listener);
+	},
+
+
+	_notify(event, descriptor) {
+		for (let listener of [...this._listeners]) {
+			try {
+				listener(event, descriptor);
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
 	},
 
 
@@ -121,6 +192,73 @@ var AgentParserProviders = {
 			}
 		}
 		return null;
+	},
+
+
+	/**
+	 * Pick the text for the app's language from a string or { 'zh-CN': ..., 'en-US': ... }
+	 */
+	localize(value) {
+		if (value == null || typeof value == 'string') {
+			return value || '';
+		}
+		let locale = Services.locale.appLocaleAsBCP47 || 'en-US';
+		let lang = locale.split('-')[0];
+		let key = Object.keys(value).find(x => x == locale)
+			|| Object.keys(value).find(x => x.split('-')[0] == lang)
+			|| (value['en-US'] !== undefined ? 'en-US' : Object.keys(value)[0]);
+		return key === undefined ? '' : String(value[key]);
+	},
+
+
+	getUserDir() {
+		return PathUtils.join(Zotero.DataDirectory.dir, ...this.USER_DIR);
+	},
+
+
+	/**
+	 * Run the user's provider scripts, in file name order
+	 *
+	 * Each script runs with the same globals as the bundled providers (AgentParserProviders,
+	 * AgentParserHTTP, AgentParserOutput, Zotero, IOUtils, ...) and calls
+	 * AgentParserProviders.register(). A script that fails doesn't stop the others; its error is
+	 * shown in the settings.
+	 */
+	async loadUserProviders() {
+		this.userScripts = [];
+		let dir = this.getUserDir();
+		let files;
+		try {
+			if (!(await IOUtils.exists(dir))) {
+				return;
+			}
+			files = (await IOUtils.getChildren(dir))
+				.filter(x => /\.js$/i.test(x) && !PathUtils.filename(x).startsWith('.'))
+				.sort();
+		}
+		catch (e) {
+			Zotero.logError(e);
+			return;
+		}
+		for (let file of files) {
+			let before = new Set(this._providers.keys());
+			let entry = { file: PathUtils.filename(file), ids: [], error: null };
+			try {
+				let url = Services.io.newFileURI(Zotero.File.pathToFile(file)).spec;
+				// Don't cache, so that edits take effect after a restart
+				Services.scriptloader.loadSubScriptWithOptions(url, { ignoreCache: true });
+			}
+			catch (e) {
+				entry.error = e.message || String(e);
+				Zotero.logError(e);
+			}
+			entry.ids = [...this._providers.keys()].filter(x => !before.has(x));
+			if (!entry.ids.length && !entry.error) {
+				entry.error = "The script didn't register a provider";
+			}
+			Zotero.debug(`Agent Parser: Loaded ${entry.file}: ${entry.ids.join(', ') || entry.error}`);
+			this.userScripts.push(entry);
+		}
 	},
 
 
@@ -200,6 +338,37 @@ var AgentParserProviders = {
 
 	async readFile(path) {
 		return IOUtils.read(path);
+	},
+
+
+	/**
+	 * multipart/form-data body, built by hand so that it doesn't depend on FormData being
+	 * available in the plugin's scope
+	 *
+	 * @param {Object} fields - Name -> string value
+	 * @param {String} fileName
+	 * @param {Uint8Array} fileData - Sent as the "file" field
+	 * @return {Object} - { data: Uint8Array, contentType }
+	 */
+	multipart(fields, fileName, fileData, { fileField = 'file', fileType = 'application/pdf' } = {}) {
+		let boundary = '----AgentParser' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+		let encoder = new TextEncoder();
+		let parts = [];
+		for (let [name, value] of Object.entries(fields)) {
+			parts.push(encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+		}
+		let safeName = (fileName || 'document.pdf').replace(/["\r\n\\]/g, '_');
+		parts.push(encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${safeName}"\r\n`
+			+ `Content-Type: ${fileType}\r\n\r\n`));
+		parts.push(fileData);
+		parts.push(encoder.encode(`\r\n--${boundary}--\r\n`));
+		let data = new Uint8Array(parts.reduce((sum, x) => sum + x.length, 0));
+		let offset = 0;
+		for (let part of parts) {
+			data.set(part, offset);
+			offset += part.length;
+		}
+		return { data, contentType: `multipart/form-data; boundary=${boundary}` };
 	},
 
 

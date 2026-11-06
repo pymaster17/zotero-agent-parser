@@ -125,7 +125,7 @@ agentparser-panel-failure-hint = 点击文件可定位到条目，在右侧「Ag
 ## Parsing services
 
 agentparser-pref-mode-desc = 新条目使用这里选择的服务解析。也可以在条目右键菜单中指定用某个服务重新解析。
-agentparser-pref-single-provider-desc = 当前版本只包含一种解析服务。如需在本机用 MinerU 解析，请改装完整版，现有设置会保留。
+agentparser-pref-single-provider-desc = 目前只有一种解析服务。可以在下方「自定义解析服务」中添加自己部署的服务。
 agentparser-pref-bulk-provider = 大批量请求（整库解析、多选条目）使用：
 agentparser-pref-bulk-provider-default =
     .label = 默认解析服务
@@ -139,6 +139,16 @@ agentparser-limit-desc = 这个服务不接受该文件，重试也会失败。�
 agentparser-limit-desc-single = 服务不接受这个文件，重试也会失败。请拆分 PDF 后再添加。
 agentparser-notify-limit-hint = 重试也会失败。可在条目的「Agent 解析」栏改用其他解析服务，或拆分 PDF。
 agentparser-notify-limit-hint-single = 重试也会失败。请拆分 PDF 后再添加。
-agentparser-setup-unavailable = 需要设置：所选的解析服务在当前版本中不可用
+agentparser-setup-unavailable = 需要设置：解析服务「{ $provider }」没有加载（自定义服务的脚本可能已删除或出错）
 agentparser-light-setup-button =
     .tooltiptext = Agent Parser — { $issue }
+agentparser-setup-custom = 需要设置：{ $message }
+agentparser-pref-provider-missing = { $provider }（未加载）
+agentparser-pref-custom-title = 自定义解析服务
+agentparser-pref-custom-desc = 把自己部署的模型（本机或局域网内的服务）接入插件：在下面的文件夹中放入解析服务脚本（.js），每个脚本注册一个或多个服务，重启 Zotero 后生效。脚本拥有与插件相同的权限，只放入你信任的代码。
+agentparser-pref-custom-none = 文件夹中还没有脚本。
+agentparser-pref-custom-loaded = ✅ { $file }：{ $ids }
+agentparser-pref-custom-error = ❌ { $file }：{ $error }
+agentparser-pref-custom-open =
+    .label = 打开文件夹
+agentparser-pref-custom-docs = 编写说明与示例

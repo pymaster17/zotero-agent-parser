@@ -658,7 +658,6 @@ AgentParserMinerUCloud.Backend = class {
 AgentParserProviders.register({
 	apiVersion: 1,
 	id: 'mineru-cloud',
-	kind: 'cloud',
 	ftl: 'agent-parser-mineru-cloud.ftl',
 	l10n: {
 		name: 'agentparser-provider-mineru-cloud',

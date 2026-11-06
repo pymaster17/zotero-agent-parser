@@ -85,6 +85,44 @@ AgentParser = {
 			}
 		};
 		Services.prefs.addObserver(AgentParserProviders.PREF_PREFIX, this._providerPrefObserver);
+		// Providers can come and go later: the user's scripts, and other plugins
+		this._unlistenProviders = AgentParserProviders.onChange(
+			(event, provider) => this._onProviderChange(event, provider)
+		);
+	},
+	
+	
+	_onProviderChange(event, provider) {
+		if (this._shuttingDown) {
+			return;
+		}
+		if (event == 'register') {
+			try {
+				provider.init?.(this.getProviderContext(provider.id));
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+			if (provider.ftl) {
+				this._l10n = typeof Localization != 'undefined' ? new Localization(this.getFTLFiles()) : null;
+				for (let win of Zotero.getMainWindows()) {
+					win.MozXULElement?.insertFTLIfNeeded(provider.ftl);
+				}
+			}
+			// Before restoreQueue(), that checks every provider anyway
+			if (this._started) {
+				this.refreshSetup(provider.id);
+			}
+		}
+		else {
+			Promise.resolve()
+				.then(() => provider.shutdown?.())
+				.catch(e => Zotero.logError(e));
+			this._providerContexts.delete(provider.id);
+		}
+		Zotero.debug(`Agent Parser: Provider ${provider.id} ${event == 'register' ? 'registered' : 'unregistered'}`);
+		this._changed();
+		this._schedulePump();
 	},
 
 
@@ -97,6 +135,8 @@ AgentParser = {
 			Zotero.Prefs.unregisterObserver(symbol);
 		}
 		this._prefObservers = [];
+		this._unlistenProviders?.();
+		this._unlistenProviders = null;
 		if (this._providerPrefObserver) {
 			Services.prefs.removeObserver(AgentParserProviders.PREF_PREFIX, this._providerPrefObserver);
 			this._providerPrefObserver = null;
@@ -210,10 +250,14 @@ AgentParser = {
 	/**
 	 * The service new files go to
 	 */
+	/**
+	 * The chosen service, even if it isn't loaded right now (e.g., a custom provider whose script
+	 * failed): files then wait for it instead of quietly going to another service
+	 */
 	getDefaultProvider() {
 		let id = this.getPref('defaultProvider');
-		if (AgentParserProviders.get(id)) {
-			return id;
+		if (id) {
+			return AgentParserProviders.resolveID(id) || id;
 		}
 		return AgentParserProviders.list()[0]?.id || null;
 	},
@@ -232,13 +276,14 @@ AgentParser = {
 	/**
 	 * Pick the service for a queue entry
 	 *
-	 * Local parsing takes about a minute per paper on Apple Silicon, so large requests (e.g., the
-	 * whole library) can go to a service with a batch API instead, once it's set up, unless the
-	 * user chose a service explicitly.
+	 * Large requests (e.g., the whole library) can go to a service with a batch API instead of the
+	 * default one (say, a slow self-hosted model), once it's set up, unless the user chose a
+	 * service explicitly.
 	 */
 	getProviderFor(entry) {
-		if (entry.provider && AgentParserProviders.get(entry.provider)) {
-			return entry.provider;
+		// A service chosen for this file, even if it isn't loaded right now
+		if (entry.provider) {
+			return AgentParserProviders.resolveID(entry.provider) || entry.provider;
 		}
 		let id = this.getDefaultProvider();
 		let bulk = this.getBulkProvider();
@@ -249,9 +294,15 @@ AgentParser = {
 	},
 	
 	
-	getProviderName(id) {
+	async getProviderName(id) {
 		let provider = AgentParserProviders.get(id);
-		return provider ? this.getString(provider.l10n.name) : Promise.resolve(id || '');
+		if (!provider) {
+			return id || '';
+		}
+		if (provider.name) {
+			return AgentParserProviders.localize(provider.name) || id;
+		}
+		return this.getString(provider.l10n.name);
 	},
 	
 	
@@ -397,7 +448,9 @@ AgentParser = {
 					waitForFile: false,
 					bulk: !!entry.bulk,
 					// `backend` before providers existed
-					provider: AgentParserProviders.resolveID(entry.provider || entry.backend),
+					// Custom providers aren't registered yet at this point, so keep unknown IDs
+					provider: AgentParserProviders.resolveID(entry.provider || entry.backend)
+						|| entry.provider || entry.backend || null,
 					variant: this._loadVariant(entry),
 					fallbackReason: entry.fallbackReason || null,
 					remote: entry.remote && typeof entry.remote == 'object' ? entry.remote : null
@@ -423,7 +476,8 @@ AgentParser = {
 	 * Start processing the queue once Zotero is initialized
 	 */
 	async restoreQueue() {
-		// Find out whether services are set up (e.g., local MinerU installed) before starting jobs
+		// Find out whether services are set up (e.g., whether a self-hosted service is running)
+		// before starting jobs
 		await Promise.all(AgentParserProviders.list().map(provider => this._refreshProviderSetup(provider.id)));
 		this._started = true;
 		if (this._queue.length) {
@@ -608,12 +662,14 @@ AgentParser = {
 	/**
 	 * What a service needs before files can be sent to it, if anything
 	 *
-	 * @return {Object|null} - { provider, id, installing }, where id is the l10n ID of the issue
+	 * @return {Object|null} - { provider, id, args, installing }, where id and args are the l10n ID
+	 *     and arguments of the issue
 	 */
 	getProviderSetupIssue(id) {
 		let provider = AgentParserProviders.get(id);
 		if (!provider) {
-			return { provider: id, id: 'agentparser-setup-unavailable' };
+			// Not loaded (e.g., a custom provider whose script is gone or failed)
+			return { provider: id, id: 'agentparser-setup-unavailable', args: { provider: id || '' } };
 		}
 		let issue = null;
 		try {
@@ -622,7 +678,19 @@ AgentParser = {
 		catch (e) {
 			Zotero.logError(e);
 		}
-		return issue && { provider: id, id: issue.l10nID, installing: !!issue.installing };
+		if (!issue) {
+			return null;
+		}
+		// Custom providers without their own strings describe the issue in plain text
+		if (!issue.l10nID) {
+			return {
+				provider: id,
+				id: 'agentparser-setup-custom',
+				args: { message: AgentParserProviders.localize(issue.message) || id },
+				installing: !!issue.installing
+			};
+		}
+		return { provider: id, id: issue.l10nID, args: issue.args || {}, installing: !!issue.installing };
 	},
 	
 	
@@ -643,7 +711,7 @@ AgentParser = {
 	 */
 	getSetupIssue() {
 		let ids = new Set([this.getDefaultProvider()]);
-		// Files queued for another service (e.g., "Reparse with Local MinerU") wait for it too
+		// Files queued for another service (e.g., "Reparse with Self-hosted MinerU") wait for it too
 		for (let entry of this._queue) {
 			ids.add(this.getProviderFor(entry));
 		}
@@ -681,7 +749,7 @@ AgentParser = {
 	
 	
 	/**
-	 * Recheck whether services are set up (e.g., local MinerU installed), and start jobs that
+	 * Recheck whether services are set up (e.g., a self-hosted service is running), and start jobs that
 	 * were waiting for them
 	 *
 	 * @param {String} [id] - Only this provider
@@ -1048,9 +1116,13 @@ AgentParser = {
 	
 	/**
 	 * Put a job back in the queue because the service refused new work for now
+	 *
+	 * @param {Boolean} [wait=true] - Retry only after BUSY_RETRY_MINUTES. Without waiting, the job
+	 *     runs again as soon as its service is ready -- for a service that isn't running, which
+	 *     reports a setup issue until it is.
 	 */
-	_defer(job, e) {
-		Zotero.debug(`Agent Parser: ${job.key} deferred for ${this.BUSY_RETRY_MINUTES} minutes (${e.message})`);
+	_defer(job, e, wait = true) {
+		Zotero.debug(`Agent Parser: ${job.key} ${wait ? `deferred for ${this.BUSY_RETRY_MINUTES} minutes` : 'waiting for its service'} (${e.message})`);
 		if (!this._queue.some(x => x.key == job.key)) {
 			this._queue.push({
 				key: job.key,
@@ -1060,7 +1132,7 @@ AgentParser = {
 				provider: job.provider,
 				variant: job.variant,
 				fallbackReason: job.fallbackReason,
-				notBefore: Date.now() + this.BUSY_RETRY_MINUTES * 60 * 1000
+				notBefore: wait ? Date.now() + this.BUSY_RETRY_MINUTES * 60 * 1000 : null
 			});
 		}
 		this._persistQueue();
@@ -1069,7 +1141,7 @@ AgentParser = {
 	
 	
 	/**
-	 * @return {String} - 'busy', 'limit', or 'error' (see AgentParserProviders)
+	 * @return {String} - 'busy', 'unavailable', 'limit', or 'error' (see AgentParserProviders)
 	 */
 	_classifyError(id, e) {
 		// Jobs can end after shutdown, once the providers are gone
@@ -1127,10 +1199,11 @@ AgentParser = {
 			}
 		}
 		catch (e) {
-			if (this._classifyError(job.service, e) != 'busy') {
+			let kind = this._classifyError(job.service, e);
+			if (kind != 'busy' && kind != 'unavailable') {
 				throw e;
 			}
-			this._defer(job, e);
+			this._defer(job, e, kind == 'busy');
 		}
 		finally {
 			await this._cleanup(ctx);
@@ -1721,7 +1794,7 @@ AgentParser = {
 		}
 		let provider = AgentParserProviders.get(this.getProviderFor({ bulk: true }));
 		let ok = win.confirm(await this.getString(
-			provider?.l10n.confirmBulk || 'agentparser-confirm-library',
+			provider?.l10n?.confirmBulk || 'agentparser-confirm-library',
 			{ count: missing.length }
 		));
 		if (!ok) {
@@ -1773,21 +1846,13 @@ AgentParser = {
 			let parse = makeItem('agentparser-menu-parse', () => this.parseSelected(win, false));
 			let reparse = makeItem('agentparser-menu-reparse', () => this.parseSelected(win, true));
 			let reveal = makeItem('agentparser-menu-reveal', () => this.revealSelected(win));
-			let added = [sep, parse, reparse];
-			// With more than one service, offer each of them
-			let providers = AgentParserProviders.list();
-			if (providers.length > 1) {
-				for (let provider of providers) {
-					let menuitem = makeItem('agentparser-menu-parse-with', () => this.parseSelected(win, true, provider.id));
-					this.getString(provider.l10n.name)
-						.then(name => doc.l10n.setAttributes(menuitem, 'agentparser-menu-parse-with', { provider: name }))
-						.catch(() => {});
-					added.push(menuitem);
-				}
-			}
-			added.push(reveal);
+			let added = [sep, parse, reparse, reveal];
 			itemMenu.append(...added);
 			elements.push(...added);
+			// "Parse with <service>" for each service, built when the menu opens since services
+			// can be added and removed
+			let parseWith = [];
+			elements.push({ remove: () => parseWith.forEach(x => x.remove()) });
 
 			let onShowing = (event) => {
 				if (event.target != itemMenu) {
@@ -1796,6 +1861,19 @@ AgentParser = {
 				let hasPDF = this.getParsableAttachments(win.ZoteroPane.getSelectedItems()).length > 0;
 				for (let elem of added) {
 					elem.hidden = !hasPDF;
+				}
+				parseWith.forEach(x => x.remove());
+				parseWith = [];
+				let providers = AgentParserProviders.list();
+				if (hasPDF && providers.length > 1) {
+					for (let provider of providers) {
+						let menuitem = makeItem('agentparser-menu-parse-with', () => this.parseSelected(win, true, provider.id));
+						this.getProviderName(provider.id)
+							.then(name => doc.l10n.setAttributes(menuitem, 'agentparser-menu-parse-with', { provider: name }))
+							.catch(() => {});
+						parseWith.push(menuitem);
+					}
+					reveal.before(...parseWith);
 				}
 			};
 			itemMenu.addEventListener('popupshowing', onShowing);
