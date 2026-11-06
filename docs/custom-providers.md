@@ -16,19 +16,32 @@
 
 ## 用 MinerU 部署本地服务
 
+推荐用 MinerU 4 部署，按硬件选择解析档位：
+
+| 硬件 | 建议档位 | 说明 |
+|---|---|---|
+| 只有 CPU | `basic` | 只用小模型，不需要显卡 |
+| 核显（Intel / AMD / Apple 芯片） | `basic` 或 `standard` | 追求速度用 `basic`；追求质量用 `standard`，公式识别更准 |
+| 独显（NVIDIA，8 GB 显存起） | `standard`，也可以尝试 `advanced` | `advanced` 更慢，对带合并单元格的复杂表格效果更好 |
+
 以 MinerU 官方文档为准，下面是一种做法：
 
 ```sh
 uv venv ~/mineru-env --python 3.12
 uv pip install --python ~/mineru-env/bin/python "mineru>=4.1,<5"
-# Apple Silicon：加装 MLX 推理引擎，实测比默认的 llama.cpp 快约 1.5 倍，启动前 export MINERU_MODEL_VLM_ENGINE=mlx
+# NVIDIA 独显（Linux / Windows）：改装 "mineru[full]>=4.1,<5"，使用 vLLM / LMDeploy
+# Apple 芯片：可加装 MLX 推理引擎（比默认的 llama.cpp 快），启动前 export MINERU_MODEL_VLM_ENGINE=mlx
 uv pip install --python ~/mineru-env/bin/python "mineru-vl-utils[mlx]"
-~/mineru-env/bin/mineru-kit models download --tier standard     # 国内可加 --source modelscope
+
+# 把 <档位> 换成 basic、standard 或 advanced（advanced 与 standard 共用模型，下载时写 standard）
+~/mineru-env/bin/mineru-kit models download --tier <档位>     # 国内可加 --source modelscope
 ~/mineru-env/bin/mineru-kit api-server --host 127.0.0.1 --port 8000 \
-    --tier standard --concurrency 1 --disable-image-analysis --preload-models
+    --tier <档位> --concurrency 1 --disable-image-analysis --preload-models
 ```
 
-然后把 `mineru-tasks-api.js` 放进脚本文件夹。服务在其他电脑上时，用 `--host 0.0.0.0 --api-key <密钥>` 启动，在设置里填上地址和 API Key。
+`--tier` 是服务能接受的最高档位，例如用 `standard` 启动的服务也能处理 `basic`。有显卡时 MinerU 会自动用显卡运行小模型；要强制只用 CPU，启动前设置 `MINERU_MODEL_SMALL_BACKEND=onnx` 和 `MINERU_MODEL_ONNX_DEVICE=cpu`。
+
+然后把 `mineru-tasks-api.js` 放进脚本文件夹，在设置里选择与服务一致的「解析档位」。服务在其他电脑上时，用 `--host 0.0.0.0 --api-key <密钥>` 启动，在设置里填上地址和 API Key。
 
 0.1.7 及以前的完整版会把 MinerU 装在 `~/.zotero-agent-parser/mineru-env`（模型在 `~/.mineru/models`），这些文件不会被删除，把上面命令里的 `~/mineru-env` 换成这个目录即可继续使用。不再需要时删除这两个目录。
 
