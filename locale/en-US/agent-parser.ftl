@@ -175,52 +175,17 @@ agentparser-action-reparse = Reparse
 agentparser-setup-token = Setup needed: no cloud API token
 agentparser-setup-local = Setup needed: local MinerU is not installed
 agentparser-setup-local-installing = Installing local MinerU; parsing starts when done
-agentparser-summary-running = Parsing { $running }, { $queued } queued
-agentparser-summary-deferred = Service busy; { $queued } PDF(s) will be retried later
-agentparser-summary-failed = { $failed ->
-        [one] 1 PDF failed to parse
-       *[other] { $failed } PDFs failed to parse
-    }
-agentparser-summary-paused = Automatic parsing is off
-agentparser-summary-idle = Automatic parsing is on, nothing pending
-
 agentparser-setup-token-button =
     .tooltiptext = Agent Parser — Setup needed: no cloud API token
 agentparser-setup-local-button =
     .tooltiptext = Agent Parser — Setup needed: local MinerU is not installed
 agentparser-setup-local-installing-button =
     .tooltiptext = Agent Parser — Installing local MinerU
-agentparser-summary-running-button =
-    .tooltiptext = Agent Parser — Parsing { $running }, { $queued } queued
-agentparser-summary-deferred-button =
-    .tooltiptext = Agent Parser — Service busy, retrying later
-agentparser-summary-failed-button =
-    .tooltiptext = Agent Parser — { $failed } failed, click for details
-agentparser-summary-paused-button =
-    .tooltiptext = Agent Parser — Automatic parsing is off
-agentparser-summary-idle-button =
-    .tooltiptext = Agent Parser — All good
-
-agentparser-menu-finish-setup = Finish Setup…
 agentparser-menu-more = { $count } more…
-agentparser-menu-queued = { $count } queued{ $blocked ->
-        [0] {""}
-       *[other] { "" } ({ $blocked } waiting for setup)
-    }{ $deferred ->
-        [0] {""}
-       *[other] { "" } ({ $deferred } retrying later)
-    }
 agentparser-menu-failures = Failed ({ $count })
-agentparser-menu-retry-failed = Retry All Failed
-agentparser-menu-clear-failures = Clear Failures
-agentparser-menu-auto-parse = Parse New Items Automatically
-agentparser-menu-parse-library-short = Parse All Unparsed PDFs in Library…
-agentparser-menu-clear-queue = Clear Queue
-agentparser-menu-settings = Agent Parser Settings…
-
 agentparser-notify-setup = Agent Parser needs setup
 agentparser-notify-setup-hint = New PDFs are queued and will be parsed once setup is complete. Click the Agent Parser icon in the toolbar or open the settings.
-agentparser-notify-failure-hint = Retry from the Agent Parser toolbar icon or the item’s “Agent Parsing” section.
+agentparser-notify-failure-hint = Retry from the item’s “Agent Parsing” section.
 agentparser-error-no-file = The PDF file is missing or didn’t finish downloading
 agentparser-error-too-many-pages = The PDF has { $pages } pages, more than the service accepts ({ $max })
 
@@ -241,7 +206,28 @@ agentparser-limit-desc = The cloud service doesn’t accept this file, so retryi
 agentparser-limit-desc-lite = The service doesn’t accept this file, so retrying would fail too. Split the PDF, or install the full edition to parse it with local MinerU.
 agentparser-action-parse-local = Parse with Local MinerU
 agentparser-error-too-large = The PDF is { $size } MB, more than the service accepts ({ $max } MB)
-agentparser-menu-limit-hint = { $count } over cloud limits, not retried (parse them locally from the item’s “Agent Parsing” section)
-agentparser-menu-limit-hint-lite = { $count } over service limits, not retried (split the PDF)
 agentparser-notify-limit-hint = Retrying would fail too. Parse it with local MinerU from the item’s “Agent Parsing” section, or split the PDF.
 agentparser-notify-limit-hint-lite = Retrying would fail too. Split the PDF, or install the full edition to parse it with local MinerU.
+
+agentparser-light-busy-button =
+    .tooltiptext = Agent Parser — Parsing { $running }, { $queued } queued
+agentparser-light-error-button =
+    .tooltiptext = Agent Parser — { $failed } failed, click for details
+agentparser-light-ok-button =
+    .tooltiptext = Agent Parser — Nothing to parse
+agentparser-light-ok-paused-button =
+    .tooltiptext = Agent Parser — Nothing to parse (automatic parsing is off)
+agentparser-light-ok = New PDFs are parsed automatically.
+agentparser-light-ok-paused = Automatic parsing is off. You can turn it on in the settings.
+agentparser-panel-ok = Nothing to parse
+agentparser-panel-busy = Parsing
+agentparser-panel-error = Needs attention
+agentparser-panel-open-settings = Open Settings
+agentparser-panel-counts = { $running } running · { $queued } queued{ $deferred ->
+        [0] {""}
+       *[other] { "" } ({ $deferred } retrying later)
+    }{ $blocked ->
+        [0] {""}
+       *[other] { "" } ({ $blocked } waiting for setup)
+    }
+agentparser-panel-failure-hint = Click a file to find it in the item list, then retry from the “Agent Parsing” section. Failures can also be cleared in the settings.

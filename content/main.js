@@ -614,6 +614,34 @@ AgentParser = {
 	
 	
 	/**
+	 * What each service is doing, for the toolbar status panel
+	 *
+	 * @return {Object} - { cloudV4: { running, queued, deferred, blocked }, local: { ... } }, where
+	 *     running is a list of { key, title, status, inBatch }
+	 */
+	getServiceDetails() {
+		let now = Date.now();
+		let details = {};
+		let get = name => details[name] || (details[name] = { running: [], queued: 0, deferred: 0, blocked: 0 });
+		for (let job of this._running.values()) {
+			get(job.service).running.push({ key: job.key, title: job.title, status: job.status, inBatch: !!job.inBatch });
+		}
+		for (let entry of this._queue) {
+			let name = this.getBackendFor(entry);
+			let service = get(name);
+			service.queued++;
+			if (!this.isBackendReady(name)) {
+				service.blocked++;
+			}
+			else if (entry.notBefore > now) {
+				service.deferred++;
+			}
+		}
+		return details;
+	},
+	
+	
+	/**
 	 * Parse status of a PDF attachment
 	 *
 	 * @return {Object} - { state, status, message, service }, where state is one of 'running',

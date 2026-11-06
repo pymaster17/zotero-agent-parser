@@ -52,3 +52,5 @@ pref("extensions.agentparser.queue", "[]");
 pref("extensions.agentparser.failures", "{}");
 // Internal: whether the settings were opened for initial setup
 pref("extensions.agentparser.firstRunDone", false);
+// Internal: whether the status column was shown in the item list (Zotero hides plugin columns at first)
+pref("extensions.agentparser.columnShown", false);

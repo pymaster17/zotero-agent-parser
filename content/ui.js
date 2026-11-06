@@ -106,7 +106,7 @@ var AgentParserUI = {
 
 
 	async _loadTooltips() {
-		let states = ['failed', 'setup', 'running', 'queued', 'done', 'none'];
+		let states = ['failed', 'setup', 'running', 'queued', 'done', 'none', 'limit'];
 		let values = await Promise.all(states.map(x => this.plugin.getString('agentparser-state-' + x)));
 		states.forEach((state, i) => {
 			this._tooltips[state] = values[i];
@@ -134,7 +134,6 @@ var AgentParserUI = {
 				continue;
 			}
 			this._updateButton(win, elements.button);
-			this._buildMenu(win, elements.popup).catch(e => Zotero.logError(e));
 			// Redraw the visible rows of the item tree
 			try {
 				let itemsView = win.ZoteroPane?.itemsView;
@@ -335,14 +334,17 @@ var AgentParserUI = {
 
 
 	//
-	// Toolbar button
+	// Toolbar status light
+	//
+	// Only shows what's going on: green when there's nothing to do, yellow while files are being
+	// parsed, red when something needs attention. Clicking it shows details.
 	//
 	addToWindow(win) {
 		let doc = win.document;
 		if (this._windows.has(win)) {
 			return;
 		}
-		let elements = { button: null, nodes: [] };
+		let elements = { button: null, panel: null, nodes: [] };
 
 		let link = doc.createElement('link');
 		link.rel = 'stylesheet';
@@ -354,19 +356,31 @@ var AgentParserUI = {
 		let button = doc.createXULElement('toolbarbutton');
 		button.id = 'agentparser-tb-status';
 		button.className = 'zotero-tb-button';
-		button.setAttribute('type', 'menu');
 		button.setAttribute('badged', 'true');
 		button.setAttribute('tabindex', '-1');
-		let popup = doc.createXULElement('menupopup');
-		popup.id = 'agentparser-tb-status-popup';
-		// The menu is kept up to date as the status changes, so that it's ready when opened
-		popup.addEventListener('popupshowing', (event) => {
-			if (event.target == popup) {
-				this._buildMenu(win, popup).catch(e => Zotero.logError(e));
+
+		let panel = doc.createXULElement('panel');
+		panel.id = 'agentparser-status-panel';
+		panel.setAttribute('type', 'arrow');
+		panel.setAttribute('animate', 'false');
+		let content = doc.createElement('div');
+		content.className = 'agentparser-panel';
+		panel.append(content);
+		panel.addEventListener('popupshowing', (event) => {
+			if (event.target == panel) {
+				this._renderPanel(win, content);
 			}
 		});
-		button.append(popup);
-		elements.popup = popup;
+		button.addEventListener('command', () => {
+			if (panel.state == 'open' || panel.state == 'showing') {
+				panel.hidePopup();
+			}
+			else {
+				panel.openPopup(button, 'bottomright topright', 0, 0, false, false);
+			}
+		});
+		(doc.getElementById('mainPopupSet') || doc.documentElement).append(panel);
+		elements.nodes.push(panel);
 
 		// Next to the sync button, which also shows background activity
 		let anchor = doc.getElementById('zotero-tb-sync-error') || doc.getElementById('zotero-tb-sync');
@@ -377,15 +391,18 @@ var AgentParserUI = {
 			let toolbar = doc.getElementById('zotero-items-toolbar');
 			if (!toolbar) {
 				link.remove();
+				panel.remove();
 				return;
 			}
 			toolbar.append(button);
 		}
 		elements.button = button;
+		elements.panel = panel;
+		elements.content = content;
 		elements.nodes.push(button);
 		this._windows.set(win, elements);
 		this._updateButton(win, button);
-		this._buildMenu(win, popup).catch(e => Zotero.logError(e));
+		this._showColumnOnce(win);
 	},
 
 
@@ -401,72 +418,122 @@ var AgentParserUI = {
 	},
 
 
+	/**
+	 * Zotero hides columns added by plugins until the user picks them, so show the status column
+	 * the first time. After that, it stays however the user leaves it.
+	 */
+	async _showColumnOnce(win) {
+		let plugin = this.plugin;
+		if (plugin.getPref('columnShown')) {
+			return;
+		}
+		for (let i = 0; i < 60; i++) {
+			if (win.closed || !this._columnKey) {
+				return;
+			}
+			let columns = win.ZoteroPane?.itemsView?.tree?._columns;
+			let list = columns?._columns;
+			if (list) {
+				let index = list.findIndex(x => x.dataKey == this._columnKey);
+				if (index != -1) {
+					try {
+						if (list[index].hidden) {
+							columns.toggleHidden(index);
+						}
+						plugin.setPref('columnShown', true);
+					}
+					catch (e) {
+						Zotero.logError(e);
+					}
+					return;
+				}
+			}
+			await Zotero.Promise.delay(1000);
+		}
+	},
+
+
+	/**
+	 * @return {String} - 'ok', 'busy', or 'error'
+	 */
+	_getLight(summary) {
+		let active = summary.running.length || summary.queued > summary.blocked;
+		if (active) {
+			return 'busy';
+		}
+		if (summary.failed || summary.setupIssue) {
+			return 'error';
+		}
+		return 'ok';
+	},
+
+
 	_updateButton(win, button) {
 		if (!button) {
 			return;
 		}
 		let summary = this.plugin.getSummary();
-		let active = summary.running.length + summary.queued;
-		button.setAttribute('state', summary.state);
+		let light = this._getLight(summary);
+		let active = summary.running.length + summary.queued - summary.blocked;
+		button.setAttribute('state', light);
+		let count = n => (n > 99 ? '99+' : String(n));
 		if (summary.failed) {
-			button.setAttribute('badge', summary.failed > 99 ? '99+' : String(summary.failed));
+			button.setAttribute('badge', count(summary.failed));
 			button.setAttribute('badgekind', 'failed');
 		}
-		else if (summary.state == 'running' && active > 1) {
-			button.setAttribute('badge', active > 99 ? '99+' : String(active));
+		else if (light == 'busy' && active > 0) {
+			button.setAttribute('badge', count(active));
 			button.setAttribute('badgekind', 'active');
 		}
 		else {
 			button.removeAttribute('badge');
 			button.removeAttribute('badgekind');
 		}
-		let [id, args] = this._summaryL10n(summary);
-		win.document.l10n.setAttributes(button, id + '-button', args);
-	},
-
-
-	/**
-	 * @return {Array} - [l10n ID, args] describing the overall status in a sentence
-	 */
-	_summaryL10n(summary) {
-		let args = {
+		let tooltip = {
+			busy: 'agentparser-light-busy-button',
+			error: summary.setupIssue && !summary.failed
+				? summary.setupIssue.id + '-button'
+				: 'agentparser-light-error-button',
+			ok: summary.autoParse ? 'agentparser-light-ok-button' : 'agentparser-light-ok-paused-button'
+		}[light];
+		win.document.l10n.setAttributes(button, tooltip, {
 			running: summary.running.length,
 			queued: summary.queued,
 			failed: summary.failed
-		};
-		switch (summary.state) {
-			case 'setup':
-				return [summary.setupIssue.id, args];
-			case 'running':
-				return ['agentparser-summary-running', args];
-			case 'queued':
-				return ['agentparser-summary-deferred', args];
-			case 'failed':
-				return ['agentparser-summary-failed', args];
-			case 'paused':
-				return ['agentparser-summary-paused', args];
-			default:
-				return ['agentparser-summary-idle', args];
+		});
+		let elements = this._windows.get(win);
+		if (elements?.panel?.state == 'open') {
+			this._renderPanel(win, elements.content);
 		}
 	},
 
 
 	/**
-	 * Fill the status menu
-	 *
-	 * Strings are resolved before the menu is touched, so that it never shows half-built.
+	 * Fill the status panel: per-service queue, files being parsed, and failures
 	 */
-	async _buildMenu(win, popup) {
+	_renderPanel(win, content) {
 		let doc = win.document;
 		let plugin = this.plugin;
-		let generation = (popup._agentParserGeneration || 0) + 1;
-		popup._agentParserGeneration = generation;
 		let summary = plugin.getSummary();
+		let light = this._getLight(summary);
+		let details = plugin.getServiceDetails();
 		let failures = plugin.getFailures();
-		let getString = (id, args) => plugin.getString(id, args);
 
-		// [label, { onCommand, icon, disabled, header, checked, tooltip }] or 'separator'
-		let entries = [];
+		let el = (tag, className, l10nID, args) => {
+			let elem = doc.createElement(tag);
+			if (className) {
+				elem.className = className;
+			}
+			if (l10nID) {
+				doc.l10n.setAttributes(elem, l10nID, args);
+			}
+			return elem;
+		};
+		let icon = (state) => {
+			let elem = el('span', 'agentparser-icon');
+			elem.dataset.state = state;
+			return elem;
+		};
 		let titleOf = (key, fallback) => {
 			let { libraryID, key: itemKey } = Zotero.Items.parseLibraryKey(key);
 			let attachment = Zotero.Items.getByLibraryAndKey(libraryID, itemKey);
@@ -476,120 +543,108 @@ var AgentParserUI = {
 			let title = attachment.parentItem ? attachment.parentItem.getDisplayTitle() : attachment.getDisplayTitle();
 			return [attachment, title];
 		};
-		let select = attachment => attachment && win.ZoteroPane.selectItem(attachment.id);
+		// Clicking a file shows it in the item list
+		let fileRow = (key, fallbackTitle, state, detailL10n, detailText) => {
+			let [attachment, title] = titleOf(key, fallbackTitle);
+			let row = el('div', 'agentparser-panel-file');
+			row.append(icon(state));
+			let text = el('div', 'agentparser-panel-file-text');
+			let name = el('div', 'agentparser-panel-file-title');
+			name.textContent = title;
+			let detail = detailL10n ? el('div', 'agentparser-panel-file-detail', ...detailL10n) : el('div', 'agentparser-panel-file-detail');
+			if (detailText) {
+				detail.textContent = detailText;
+				detail.title = detailText;
+			}
+			text.append(name, detail);
+			row.append(text);
+			if (attachment) {
+				row.classList.add('agentparser-clickable');
+				row.addEventListener('click', () => {
+					win.ZoteroPane.selectItem(attachment.id);
+					content.closest('panel')?.hidePopup();
+				});
+			}
+			return row;
+		};
 
-		// Overall status
-		let [summaryID, summaryArgs] = this._summaryL10n(summary);
-		entries.push([await getString(summaryID, summaryArgs), {
-			icon: { setup: 'warning', running: 'running', failed: 'failed', done: 'done', queued: 'queued' }[summary.state],
-			disabled: true,
-			header: true
-		}]);
+		let nodes = [];
+
+		// Headline
+		let head = el('div', 'agentparser-panel-head');
+		head.dataset.light = light;
+		let dot = el('span', 'agentparser-light');
+		dot.dataset.light = light;
+		head.append(dot, el('span', 'agentparser-panel-headline', 'agentparser-panel-' + light));
+		nodes.push(head);
+
+		// Setup needed
 		if (summary.setupIssue) {
-			entries.push([await getString('agentparser-menu-finish-setup'), { onCommand: () => plugin.openPreferences() }]);
+			let box = el('div', 'agentparser-panel-notice');
+			box.append(icon('setup'), el('span', null, summary.setupIssue.id));
+			if (summary.setupIssue.id != 'agentparser-setup-local-installing') {
+				let open = el('a', 'agentparser-panel-link', 'agentparser-panel-open-settings');
+				open.addEventListener('click', () => {
+					content.closest('panel')?.hidePopup();
+					plugin.openPreferences();
+				});
+				box.append(open);
+			}
+			nodes.push(box);
 		}
 
-		// Files being parsed
-		if (summary.running.length) {
-			entries.push('separator');
-			for (let job of summary.running.slice(0, this.MAX_MENU_ITEMS)) {
-				let [attachment, title] = titleOf(job.key, job.title);
-				let status = await getString(this._statusL10nID({ state: 'running', status: job.status }));
-				let service = await getString(this._serviceL10nID(job.service));
-				entries.push([`${title} — ${status} · ${service}`, { icon: 'running', onCommand: () => select(attachment) }]);
+		// Each service's queue
+		let services = Object.keys(details).sort((a, b) => (a == 'cloudV4' ? -1 : b == 'cloudV4' ? 1 : 0));
+		for (let name of services) {
+			let service = details[name];
+			let section = el('div', 'agentparser-panel-section');
+			let title = el('div', 'agentparser-panel-section-title');
+			title.append(
+				el('span', null, name == 'local' ? 'agentparser-service-local' : 'agentparser-service-cloud'),
+				el('span', 'agentparser-panel-counts', 'agentparser-panel-counts', {
+					running: service.running.length,
+					queued: service.queued,
+					deferred: service.deferred,
+					blocked: service.blocked
+				})
+			);
+			section.append(title);
+			for (let job of service.running.slice(0, this.MAX_MENU_ITEMS)) {
+				section.append(fileRow(job.key, job.title, 'running',
+					[this._statusL10nID({ state: 'running', status: job.status })]));
 			}
-			if (summary.running.length > this.MAX_MENU_ITEMS) {
-				entries.push([await getString('agentparser-menu-more', { count: summary.running.length - this.MAX_MENU_ITEMS }), { disabled: true }]);
+			if (service.running.length > this.MAX_MENU_ITEMS) {
+				section.append(el('div', 'agentparser-panel-more', 'agentparser-menu-more',
+					{ count: service.running.length - this.MAX_MENU_ITEMS }));
 			}
-		}
-		if (summary.queued) {
-			if (!summary.running.length) {
-				entries.push('separator');
-			}
-			entries.push([await getString('agentparser-menu-queued', {
-				count: summary.queued,
-				deferred: summary.deferred,
-				blocked: summary.blocked
-			}), { icon: summary.blocked ? 'warning' : 'queued', disabled: true }]);
+			nodes.push(section);
 		}
 
 		// Failures
 		if (failures.length) {
-			entries.push('separator');
-			entries.push([await getString('agentparser-menu-failures', { count: failures.length }), { disabled: true, header: true }]);
+			let section = el('div', 'agentparser-panel-section');
+			let title = el('div', 'agentparser-panel-section-title');
+			title.append(el('span', null, 'agentparser-menu-failures', { count: failures.length }));
+			section.append(title);
 			for (let failure of failures.slice(0, this.MAX_MENU_ITEMS)) {
-				let [attachment, title] = titleOf(failure.key, failure.title);
-				let prefix = failure.kind == 'limit' ? (await getString('agentparser-state-limit')) + ': ' : '';
-				entries.push([`${title} — ${prefix}${failure.message}`, {
-					icon: 'failed',
-					tooltip: failure.message,
-					onCommand: () => select(attachment)
-				}]);
+				let row = fileRow(failure.key, failure.title, 'failed', null,
+					failure.kind == 'limit' ? `${this._tooltips.limit || ''}: ${failure.message}` : failure.message);
+				section.append(row);
 			}
 			if (failures.length > this.MAX_MENU_ITEMS) {
-				entries.push([await getString('agentparser-menu-more', { count: failures.length - this.MAX_MENU_ITEMS }), { disabled: true }]);
+				section.append(el('div', 'agentparser-panel-more', 'agentparser-menu-more',
+					{ count: failures.length - this.MAX_MENU_ITEMS }));
 			}
-			let limited = failures.filter(x => x.kind == 'limit').length;
-			if (limited) {
-				entries.push([await getString(plugin.local ? 'agentparser-menu-limit-hint' : 'agentparser-menu-limit-hint-lite', { count: limited }), {
-					icon: 'warning',
-					disabled: true
-				}]);
-			}
-			entries.push([await getString('agentparser-menu-retry-failed'), {
-				onCommand: async () => {
-					let count = await plugin.retryFailed();
-					await plugin._showQueued(count);
-				}
-			}]);
-			entries.push([await getString('agentparser-menu-clear-failures'), { onCommand: () => plugin.clearFailures() }]);
+			section.append(el('div', 'agentparser-panel-hint', 'agentparser-panel-failure-hint'));
+			nodes.push(section);
 		}
 
-		// Controls
-		entries.push('separator');
-		entries.push([await getString('agentparser-menu-auto-parse'), {
-			checked: summary.autoParse,
-			onCommand: () => plugin.setPref('autoParse', !plugin.getPref('autoParse'))
-		}]);
-		entries.push([await getString('agentparser-menu-parse-library-short'), { onCommand: () => plugin.parseLibrary(win) }]);
-		if (summary.queued) {
-			entries.push([await getString('agentparser-menu-clear-queue'), { onCommand: () => plugin.clearQueue() }]);
+		// Nothing going on
+		if (!services.length && !failures.length && !summary.setupIssue) {
+			nodes.push(el('div', 'agentparser-panel-hint',
+				summary.autoParse ? 'agentparser-light-ok' : 'agentparser-light-ok-paused'));
 		}
-		entries.push([await getString('agentparser-menu-settings'), { onCommand: () => plugin.openPreferences() }]);
 
-		// A newer build started in the meantime
-		if (popup._agentParserGeneration != generation || win.closed) {
-			return;
-		}
-		let nodes = entries.map((entry) => {
-			if (entry == 'separator') {
-				return doc.createXULElement('menuseparator');
-			}
-			let [label, { onCommand, icon, disabled, header, checked, tooltip } = {}] = entry;
-			let menuitem = doc.createXULElement('menuitem');
-			menuitem.setAttribute('label', label);
-			if (icon) {
-				menuitem.classList.add('menuitem-iconic');
-				menuitem.setAttribute('image', this.ICONS + icon + '.svg');
-			}
-			if (header) {
-				menuitem.classList.add('agentparser-menu-header');
-			}
-			if (disabled) {
-				menuitem.setAttribute('disabled', 'true');
-			}
-			if (checked !== undefined) {
-				menuitem.setAttribute('type', 'checkbox');
-				menuitem.setAttribute('checked', checked ? 'true' : 'false');
-			}
-			if (tooltip) {
-				menuitem.setAttribute('tooltiptext', tooltip);
-			}
-			if (onCommand) {
-				menuitem.addEventListener('command', onCommand);
-			}
-			return menuitem;
-		});
-		popup.replaceChildren(...nodes);
+		content.replaceChildren(...nodes);
 	}
 };

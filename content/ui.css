@@ -1,38 +1,24 @@
 /* Agent Parser: styles injected into the main window */
 
-/* Toolbar status button */
+/* Toolbar status light: green = nothing to do, yellow = parsing, red = needs attention */
 #agentparser-tb-status {
-	list-style-image: url("chrome://agentparser/content/icons/toolbar.svg");
-	fill: currentColor;
-	-moz-context-properties: fill, fill-opacity;
+	list-style-image: url("chrome://agentparser/content/icons/light-ok.svg");
 }
 
-#agentparser-tb-status[state="paused"] {
-	fill-opacity: 0.45;
+#agentparser-tb-status[state="busy"] {
+	list-style-image: url("chrome://agentparser/content/icons/light-busy.svg");
 }
 
-#agentparser-tb-status[state="running"] {
-	list-style-image: url("chrome://agentparser/content/icons/running.svg");
+#agentparser-tb-status[state="busy"] .toolbarbutton-icon {
+	animation: agentparser-spin 1.2s linear infinite;
 }
 
-#agentparser-tb-status[state="running"] .toolbarbutton-icon {
-	animation: agentparser-spin 1s linear infinite;
+#agentparser-tb-status[state="error"] {
+	list-style-image: url("chrome://agentparser/content/icons/light-error.svg");
 }
 
-#agentparser-tb-status[state="done"] {
-	list-style-image: url("chrome://agentparser/content/icons/done.svg");
-}
-
-#agentparser-tb-status[state="failed"] {
-	list-style-image: url("chrome://agentparser/content/icons/failed.svg");
-}
-
-#agentparser-tb-status[state="setup"] {
-	list-style-image: url("chrome://agentparser/content/icons/warning.svg");
-}
-
-/* Status icons are 16px, the toolbar's own icons 20px */
-#agentparser-tb-status:not([state="idle"], [state="paused"]) .toolbarbutton-icon {
+/* The status icons are 16px, the toolbar's own icons 20px */
+#agentparser-tb-status .toolbarbutton-icon {
 	padding: 2px;
 }
 
@@ -51,7 +37,7 @@
 }
 
 #agentparser-tb-status[badgekind="active"] .toolbarbutton-badge {
-	background-color: var(--accent-blue, #4072e5);
+	background-color: #8a6000;
 }
 
 #agentparser-tb-status:not([badge]) .toolbarbutton-badge,
@@ -59,8 +45,116 @@
 	display: none;
 }
 
-#agentparser-tb-status > .toolbarbutton-menu-dropmarker {
-	display: none;
+/* Status panel */
+.agentparser-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	width: 340px;
+	max-height: 480px;
+	overflow-y: auto;
+	padding: 12px;
+}
+
+.agentparser-panel-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 600;
+	font-size: 1.05em;
+}
+
+.agentparser-light {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex: none;
+}
+
+.agentparser-light[data-light="ok"] { background: var(--accent-green, #39bf68); }
+.agentparser-light[data-light="busy"] { background: var(--accent-yellow, #faa700); }
+.agentparser-light[data-light="error"] { background: var(--accent-red, #db2c3a); }
+
+.agentparser-panel-notice {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.agentparser-panel-link {
+	color: var(--accent-blue, #4072e5);
+	cursor: pointer;
+	text-decoration: underline;
+}
+
+.agentparser-panel-section {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border-top: 1px solid var(--fill-quinary, rgba(0, 0, 0, 0.08));
+	padding-top: 8px;
+}
+
+.agentparser-panel-section-title {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	font-weight: 600;
+}
+
+.agentparser-panel-counts {
+	font-weight: normal;
+	color: var(--fill-secondary, gray);
+	white-space: nowrap;
+}
+
+.agentparser-panel-file {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	padding: 3px 4px;
+	border-radius: 4px;
+}
+
+.agentparser-panel-file .agentparser-icon {
+	margin-top: 1px;
+}
+
+.agentparser-panel-file.agentparser-clickable {
+	cursor: pointer;
+}
+
+.agentparser-panel-file.agentparser-clickable:hover {
+	background: var(--fill-quinary, rgba(0, 0, 0, 0.06));
+}
+
+.agentparser-panel-file-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1;
+}
+
+.agentparser-panel-file-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agentparser-panel-file-detail,
+.agentparser-panel-more,
+.agentparser-panel-hint {
+	color: var(--fill-secondary, gray);
+	font-size: 0.92em;
+}
+
+.agentparser-panel-file-detail {
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	overflow-wrap: anywhere;
 }
 
 @keyframes agentparser-spin {
@@ -68,21 +162,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	#agentparser-tb-status[state="running"] .toolbarbutton-icon,
+	#agentparser-tb-status[state="busy"] .toolbarbutton-icon,
 	.agentparser-icon[data-state="running"] {
 		animation: none !important;
 	}
-}
-
-/* Status menu */
-.agentparser-menu-header {
-	font-weight: 600;
-	opacity: 1 !important;
-	color: inherit !important;
-}
-
-.agentparser-menu-detail {
-	padding-inline-start: 8px;
 }
 
 /* Status icons in the item tree, item pane, and menus */

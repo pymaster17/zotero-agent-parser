@@ -175,49 +175,17 @@ agentparser-action-reparse = 重新解析
 agentparser-setup-token = 需要设置：未填写云端 API Token
 agentparser-setup-local = 需要设置：本地 MinerU 尚未安装
 agentparser-setup-local-installing = 正在安装本地 MinerU，完成后开始解析
-agentparser-summary-running = 正在解析 { $running } 个，排队 { $queued } 个
-agentparser-summary-deferred = 服务繁忙，{ $queued } 个 PDF 稍后自动重试
-agentparser-summary-failed = { $failed } 个 PDF 解析失败
-agentparser-summary-paused = 自动解析已关闭
-agentparser-summary-idle = 自动解析已开启，没有待处理的 PDF
-
 agentparser-setup-token-button =
     .tooltiptext = Agent Parser — 需要设置：未填写云端 API Token
 agentparser-setup-local-button =
     .tooltiptext = Agent Parser — 需要设置：本地 MinerU 尚未安装
 agentparser-setup-local-installing-button =
     .tooltiptext = Agent Parser — 正在安装本地 MinerU
-agentparser-summary-running-button =
-    .tooltiptext = Agent Parser — 正在解析 { $running } 个，排队 { $queued } 个
-agentparser-summary-deferred-button =
-    .tooltiptext = Agent Parser — 服务繁忙，稍后自动重试
-agentparser-summary-failed-button =
-    .tooltiptext = Agent Parser — { $failed } 个 PDF 解析失败，点击查看
-agentparser-summary-paused-button =
-    .tooltiptext = Agent Parser — 自动解析已关闭
-agentparser-summary-idle-button =
-    .tooltiptext = Agent Parser — 一切正常
-
-agentparser-menu-finish-setup = 完成设置…
 agentparser-menu-more = 还有 { $count } 项…
-agentparser-menu-queued = 排队 { $count } 个{ $blocked ->
-        [0] {""}
-       *[other] （{ $blocked } 个等待设置）
-    }{ $deferred ->
-        [0] {""}
-       *[other] （{ $deferred } 个稍后重试）
-    }
 agentparser-menu-failures = 解析失败（{ $count }）
-agentparser-menu-retry-failed = 重试所有失败项
-agentparser-menu-clear-failures = 清除失败记录
-agentparser-menu-auto-parse = 添加条目时自动解析
-agentparser-menu-parse-library-short = 解析当前库中所有未解析的 PDF…
-agentparser-menu-clear-queue = 清空队列
-agentparser-menu-settings = Agent Parser 设置…
-
 agentparser-notify-setup = Agent Parser 需要完成设置
 agentparser-notify-setup-hint = 新的 PDF 已加入队列，完成设置后自动开始解析。点击工具栏中的 Agent Parser 图标或打开设置。
-agentparser-notify-failure-hint = 可在工具栏的 Agent Parser 图标或条目的「Agent 解析」栏中重试。
+agentparser-notify-failure-hint = 可在条目右侧的「Agent 解析」栏中重试。
 agentparser-error-no-file = PDF 文件不存在或未能下载完成
 agentparser-error-too-many-pages = PDF 共 { $pages } 页，超过服务上限（{ $max } 页）
 
@@ -238,7 +206,28 @@ agentparser-limit-desc = 云端服务不接受这个文件，重试也会失败�
 agentparser-limit-desc-lite = 服务不接受这个文件，重试也会失败。可以拆分 PDF 后再添加，或改装完整版用本地 MinerU 解析。
 agentparser-action-parse-local = 用本地 MinerU 解析
 agentparser-error-too-large = PDF 大小为 { $size } MB，超过服务上限（{ $max } MB）
-agentparser-menu-limit-hint = 其中 { $count } 个超出云端限制，不会自动重试（可在条目的「Agent 解析」栏改用本地解析）
-agentparser-menu-limit-hint-lite = 其中 { $count } 个超出服务限制，不会自动重试（需拆分 PDF）
 agentparser-notify-limit-hint = 重试也会失败。可在条目的「Agent 解析」栏改用本地 MinerU 解析，或拆分 PDF。
 agentparser-notify-limit-hint-lite = 重试也会失败。请拆分 PDF 后再添加，或改装完整版用本地 MinerU 解析。
+
+agentparser-light-busy-button =
+    .tooltiptext = Agent Parser — 正在解析 { $running } 个，排队 { $queued } 个
+agentparser-light-error-button =
+    .tooltiptext = Agent Parser — { $failed } 个 PDF 解析失败，点击查看
+agentparser-light-ok-button =
+    .tooltiptext = Agent Parser — 无解析任务
+agentparser-light-ok-paused-button =
+    .tooltiptext = Agent Parser — 无解析任务（自动解析已关闭）
+agentparser-light-ok = 新添加的 PDF 会自动解析。
+agentparser-light-ok-paused = 自动解析已关闭，可在设置中开启。
+agentparser-panel-ok = 无解析任务
+agentparser-panel-busy = 正在解析
+agentparser-panel-error = 解析出现异常
+agentparser-panel-open-settings = 打开设置
+agentparser-panel-counts = 进行中 { $running } · 排队 { $queued }{ $deferred ->
+        [0] {""}
+       *[other] （{ $deferred } 个稍后重试）
+    }{ $blocked ->
+        [0] {""}
+       *[other] （{ $blocked } 个等待设置）
+    }
+agentparser-panel-failure-hint = 点击文件可定位到条目，在右侧「Agent 解析」栏重试。失败记录也可以在设置中清除。
