@@ -1,0 +1,178 @@
+/* Agent Parser: styles injected into the main window */
+
+/* Toolbar status button */
+#agentparser-tb-status {
+	list-style-image: url("chrome://agentparser/content/icons/toolbar.svg");
+	fill: currentColor;
+	-moz-context-properties: fill, fill-opacity;
+}
+
+#agentparser-tb-status[state="paused"] {
+	fill-opacity: 0.45;
+}
+
+#agentparser-tb-status[state="running"] {
+	list-style-image: url("chrome://agentparser/content/icons/running.svg");
+}
+
+#agentparser-tb-status[state="running"] .toolbarbutton-icon {
+	animation: agentparser-spin 1s linear infinite;
+}
+
+#agentparser-tb-status[state="done"] {
+	list-style-image: url("chrome://agentparser/content/icons/done.svg");
+}
+
+#agentparser-tb-status[state="failed"] {
+	list-style-image: url("chrome://agentparser/content/icons/failed.svg");
+}
+
+#agentparser-tb-status[state="setup"] {
+	list-style-image: url("chrome://agentparser/content/icons/warning.svg");
+}
+
+/* Status icons are 16px, the toolbar's own icons 20px */
+#agentparser-tb-status:not([state="idle"], [state="paused"]) .toolbarbutton-icon {
+	padding: 2px;
+}
+
+#agentparser-tb-status .toolbarbutton-badge {
+	background-color: var(--accent-red, #db2c3a);
+	color: #fff;
+	border-radius: 7px;
+	min-width: 14px;
+	line-height: 13px;
+	font-size: 9px;
+	font-weight: 600;
+	text-align: center;
+	padding: 0 3px;
+	margin-inline-end: -6px;
+	margin-block-start: -4px;
+}
+
+#agentparser-tb-status[badgekind="active"] .toolbarbutton-badge {
+	background-color: var(--accent-blue, #4072e5);
+}
+
+#agentparser-tb-status:not([badge]) .toolbarbutton-badge,
+#agentparser-tb-status[badge=""] .toolbarbutton-badge {
+	display: none;
+}
+
+#agentparser-tb-status > .toolbarbutton-menu-dropmarker {
+	display: none;
+}
+
+@keyframes agentparser-spin {
+	to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#agentparser-tb-status[state="running"] .toolbarbutton-icon,
+	.agentparser-icon[data-state="running"] {
+		animation: none !important;
+	}
+}
+
+/* Status menu */
+.agentparser-menu-header {
+	font-weight: 600;
+	opacity: 1 !important;
+	color: inherit !important;
+}
+
+.agentparser-menu-detail {
+	padding-inline-start: 8px;
+}
+
+/* Status icons in the item tree, item pane, and menus */
+.agentparser-icon {
+	display: inline-block;
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	background: center / 16px 16px no-repeat;
+	vertical-align: middle;
+}
+
+.agentparser-icon[data-state="done"] { background-image: url("chrome://agentparser/content/icons/done.svg"); }
+.agentparser-icon[data-state="failed"] { background-image: url("chrome://agentparser/content/icons/failed.svg"); }
+.agentparser-icon[data-state="queued"] { background-image: url("chrome://agentparser/content/icons/queued.svg"); }
+.agentparser-icon[data-state="setup"] { background-image: url("chrome://agentparser/content/icons/warning.svg"); }
+.agentparser-icon[data-state="none"] { background-image: url("chrome://agentparser/content/icons/none.svg"); }
+.agentparser-icon[data-state="running"] {
+	background-image: url("chrome://agentparser/content/icons/running.svg");
+	animation: agentparser-spin 1s linear infinite;
+}
+
+/* Item tree column */
+.agentparser-cell {
+	display: flex !important;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Item pane section */
+.agentparser-section {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding-block: 2px;
+}
+
+.agentparser-row {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.agentparser-row + .agentparser-row {
+	border-top: 1px solid var(--fill-quinary, rgba(0, 0, 0, 0.08));
+	padding-top: 10px;
+}
+
+.agentparser-row-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.agentparser-row-state {
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.agentparser-row[data-state="done"] .agentparser-row-state { color: var(--accent-green, #39bf68); }
+.agentparser-row[data-state="failed"] .agentparser-row-state { color: var(--accent-red, #db2c3a); }
+.agentparser-row[data-state="setup"] .agentparser-row-state { color: var(--accent-gold, #cc9200); }
+.agentparser-row[data-state="running"] .agentparser-row-state { color: var(--accent-blue, #4072e5); }
+
+.agentparser-row-file {
+	color: var(--fill-secondary, gray);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+	flex: 1;
+}
+
+.agentparser-row-message {
+	color: var(--fill-secondary, gray);
+	overflow-wrap: anywhere;
+	user-select: text;
+}
+
+.agentparser-row[data-state="failed"] .agentparser-row-message {
+	color: var(--accent-red, #db2c3a);
+}
+
+.agentparser-row-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.agentparser-row-buttons button {
+	margin: 0;
+}

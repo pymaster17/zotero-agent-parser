@@ -194,6 +194,29 @@ var AgentParserLocal = {
 	},
 
 
+	/**
+	 * Whether MinerU can be used, from what getStatus() last found
+	 *
+	 * @return {Boolean|undefined} - undefined if getStatus() hasn't checked yet
+	 */
+	isReady() {
+		if (!this.isManaged()) {
+			return true;
+		}
+		if (this._task) {
+			return false;
+		}
+		if (this._envInfo === undefined) {
+			return undefined;
+		}
+		if (!this._envInfo?.installed) {
+			return false;
+		}
+		let models = this._modelsReady.get(this.getModelTier());
+		return models === undefined ? undefined : models;
+	},
+
+
 	async _readEnvInfo() {
 		let python = this._bin('python');
 		if (!(await IOUtils.exists(python))) {

@@ -3,6 +3,8 @@
 var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 var AgentParser;
 var AgentParserEdition;
+var AgentParserUI;
+var chromeHandle;
 
 // fetch, TextEncoder, etc. are already provided by the plugin sandbox, but not AbortController
 for (let prop of ["fetch", "AbortController"]) {
@@ -15,6 +17,12 @@ for (let prop of ["fetch", "AbortController"]) {
 function install() {}
 
 async function startup({ id, version, rootURI }) {
+	// chrome://agentparser/content/ for icons and styles
+	let aomStartup = Cc['@mozilla.org/addons/addon-manager-startup;1'].getService(Ci.amIAddonManagerStartup);
+	chromeHandle = aomStartup.registerChrome(Services.io.newURI(rootURI + 'manifest.json'), [
+		['content', 'agentparser', rootURI + 'content/']
+	]);
+
 	Services.scriptloader.loadSubScript(rootURI + 'content/edition.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/http.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/backends.js');
@@ -24,17 +32,27 @@ async function startup({ id, version, rootURI }) {
 	}
 	Services.scriptloader.loadSubScript(rootURI + 'content/output.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/main.js');
+	Services.scriptloader.loadSubScript(rootURI + 'content/ui.js');
 
 	AgentParser.init({ id, version, rootURI });
 
-	Zotero.PreferencePanes.register({
+	let paneID = await Zotero.PreferencePanes.register({
 		pluginID: id,
 		id: 'agent-parser-prefs',
 		src: rootURI + 'content/preferences.xhtml',
 		scripts: [rootURI + 'content/preferences.js'],
 	});
+	if (paneID) {
+		AgentParser.prefPaneID = paneID;
+	}
 
 	await Zotero.initializationPromise;
+	try {
+		AgentParserUI.register();
+	}
+	catch (e) {
+		Zotero.logError(e);
+	}
 	for (let win of Zotero.getMainWindows()) {
 		if (win.ZoteroPane) {
 			AgentParser.addToWindow(win);
@@ -52,8 +70,17 @@ function onMainWindowUnload({ window }) {
 }
 
 function shutdown() {
+	try {
+		AgentParserUI?.unregister();
+	}
+	catch (e) {
+		Zotero.logError(e);
+	}
 	AgentParser?.shutdown();
 	AgentParser = undefined;
+	AgentParserUI = undefined;
+	chromeHandle?.destruct();
+	chromeHandle = null;
 }
 
 function uninstall() {}

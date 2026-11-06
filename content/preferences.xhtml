@@ -3,6 +3,37 @@
 </linkset>
 
 <vbox id="agentparser-prefpane" class="main-section" onload="AgentParserPrefs.init()">
+	<!-- At a glance: whether setup is complete, what's running, and what failed -->
+	<html:style>
+		.agentparser-status-row { display: flex; align-items: center; gap: 6px; min-height: 28px; }
+		.agentparser-status-row[hidden] { display: none; }
+		.agentparser-status-row label, .agentparser-status-row button { margin: 0; }
+	</html:style>
+	<groupbox id="agentparser-status-box">
+		<label><html:h2 data-l10n-id="agentparser-pref-status"/></label>
+		<html:div class="agentparser-status-row">
+			<html:img id="agentparser-status-icon" width="16" height="16"/>
+			<html:span id="agentparser-status-text" style="font-weight: 600"/>
+			<html:span style="flex: 1"/>
+			<button id="agentparser-status-setup" data-l10n-id="agentparser-pref-finish-setup"
+				oncommand="AgentParserPrefs.scrollToSetup()" hidden="true"/>
+		</html:div>
+		<html:div class="agentparser-status-row">
+			<html:img src="chrome://agentparser/content/icons/queued.svg" width="16" height="16"/>
+			<label id="agentparser-queue-status"/>
+			<html:span style="flex: 1"/>
+			<button data-l10n-id="agentparser-pref-clear-queue" oncommand="AgentParserPrefs.clearQueue()"/>
+		</html:div>
+		<html:div class="agentparser-status-row" id="agentparser-failures-line" hidden="hidden">
+			<html:img src="chrome://agentparser/content/icons/failed.svg" width="16" height="16"/>
+			<label id="agentparser-failures-status"/>
+			<html:span style="flex: 1"/>
+			<button data-l10n-id="agentparser-pref-retry-failed" oncommand="AgentParserPrefs.retryFailed()"/>
+			<button data-l10n-id="agentparser-pref-clear-failures" oncommand="AgentParserPrefs.clearFailures()"/>
+		</html:div>
+		<description data-l10n-id="agentparser-pref-columns-hint"/>
+	</groupbox>
+
 	<groupbox class="agentparser-full-only">
 		<label><html:h2 data-l10n-id="agentparser-pref-mode"/></label>
 		<radiogroup id="agentparser-mode" preference="extensions.agentparser.mode"
@@ -188,13 +219,5 @@
 				preference="extensions.agentparser.successTag"/>
 		</grid>
 		<checkbox preference="extensions.agentparser.markForSync" data-l10n-id="agentparser-pref-mark-sync" native="true"/>
-	</groupbox>
-
-	<groupbox>
-		<label><html:h2 data-l10n-id="agentparser-pref-queue"/></label>
-		<hbox align="center">
-			<label id="agentparser-queue-status" flex="1"/>
-			<button data-l10n-id="agentparser-pref-clear-queue" oncommand="AgentParserPrefs.clearQueue()"/>
-		</hbox>
 	</groupbox>
 </vbox>

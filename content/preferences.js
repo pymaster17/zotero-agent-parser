@@ -164,9 +164,14 @@ window.AgentParserPrefs = {
 		}
 		plugin.local.install()
 			.catch(e => Zotero.debug('Agent Parser: Install failed: ' + e))
-			.finally(() => this.refreshLocal({ refresh: true }));
+			.finally(() => {
+				this.refreshLocal({ refresh: true });
+				plugin.refreshSetup();
+			});
 		this._hadTask = true;
 		this.refreshLocal();
+		// Jobs for local MinerU wait while it's being installed
+		plugin._changed();
 	},
 
 
@@ -207,6 +212,7 @@ window.AgentParserPrefs = {
 		if (!plugin || !label) {
 			return;
 		}
+		this._renderSummary();
 		let { queued, running } = plugin.getStatus();
 		label.value = await plugin.getString('agentparser-pref-queue-status', {
 			queued,
@@ -221,6 +227,69 @@ window.AgentParserPrefs = {
 
 	clearQueue() {
 		Zotero.AgentParser?.clearQueue();
+		this.updateQueueStatus();
+	},
+
+
+	_renderSummary() {
+		let plugin = this._plugin;
+		let summary = plugin.getSummary();
+		let icon = document.getElementById('agentparser-status-icon');
+		let text = document.getElementById('agentparser-status-text');
+		let iconName;
+		let textID;
+		if (summary.setupIssue) {
+			iconName = 'warning';
+			textID = summary.setupIssue.id;
+		}
+		else {
+			iconName = summary.autoParse ? 'done' : 'none';
+			textID = summary.autoParse ? 'agentparser-pref-status-ok' : 'agentparser-pref-status-paused';
+		}
+		icon.src = `chrome://agentparser/content/icons/${iconName}.svg`;
+		if (text.getAttribute('data-l10n-id') != textID) {
+			document.l10n.setAttributes(text, textID);
+		}
+		document.getElementById('agentparser-status-setup').hidden = !summary.setupIssue
+			|| summary.setupIssue.id == 'agentparser-setup-local-installing';
+
+		let failuresLine = document.getElementById('agentparser-failures-line');
+		failuresLine.hidden = !summary.failed;
+		if (summary.failed) {
+			document.l10n.setAttributes(document.getElementById('agentparser-failures-status'),
+				'agentparser-pref-failures', { count: summary.failed });
+		}
+	},
+
+
+	/**
+	 * Take the user to what needs to be set up
+	 */
+	scrollToSetup() {
+		let issue = this._plugin?.getSetupIssue();
+		if (!issue) {
+			return;
+		}
+		let target = issue.backend == 'local'
+			? document.getElementById('agentparser-local-install')
+			: document.getElementById('agentparser-cloudv4-token');
+		target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		target?.focus();
+	},
+
+
+	async retryFailed() {
+		let plugin = this._plugin;
+		if (!plugin) {
+			return;
+		}
+		await plugin.retryFailed();
+		this.updateQueueStatus();
+	},
+
+
+	clearFailures() {
+		this._plugin?.clearFailures();
 		this.updateQueueStatus();
 	}
 };

@@ -48,3 +48,7 @@ pref("extensions.agentparser.cloudV4.urlHosts", "arxiv.org, aclanthology.org, is
 
 // Internal: persisted queue of pending jobs
 pref("extensions.agentparser.queue", "[]");
+// Internal: files that failed to parse, shown in the status menu and item pane
+pref("extensions.agentparser.failures", "{}");
+// Internal: whether the settings were opened for initial setup
+pref("extensions.agentparser.firstRunDone", false);

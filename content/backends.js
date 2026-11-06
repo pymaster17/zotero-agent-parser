@@ -103,6 +103,15 @@ var AgentParserBackends = {
 	 */
 	isServerBusy(e) {
 		return !!e && AgentParserBackends.CloudV4.BUSY_CODES.has(e.code);
+	},
+
+
+	/**
+	 * Whether the service rejected the file for being outside its limits (size, pages), in which
+	 * case parsing it again with the same service fails the same way
+	 */
+	isLimitExceeded(e) {
+		return !!e && !!e.limitExceeded;
 	}
 };
 
@@ -259,10 +268,13 @@ AgentParserBackends.Tasks = class {
  */
 AgentParserBackends.CloudV4 = class {
 	static MAX_BATCH = 50;
-	// The API rejects longer files
+	// The API rejects longer and larger files
 	static MAX_PAGES = 200;
+	static MAX_FILE_SIZE = 200 * 1024 * 1024;
 	// -60009: submission queue is full, -60018: daily task limit reached
 	static BUSY_CODES = new Set([-60009, -60018]);
+	// -60005: file too large, -60006: too many pages. Trying again won't help.
+	static LIMIT_CODES = new Set([-60005, -60006]);
 	// States before the server starts working on a file
 	static QUEUED_STATES = new Set(['waiting-file', 'pending']);
 	
@@ -299,6 +311,7 @@ AgentParserBackends.CloudV4 = class {
 		if (!json || json.code !== 0) {
 			let e = new Error(`MinerU API error: ${json && (json.msg || json.msgCode || json.code)}`);
 			e.code = json && json.code;
+			e.limitExceeded = AgentParserBackends.CloudV4.LIMIT_CODES.has(e.code);
 			throw e;
 		}
 		return json.data;
