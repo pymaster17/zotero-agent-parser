@@ -1,17 +1,26 @@
-/* global Zotero, window, document */
+/* global Zotero, Services, window, document */
+
+/**
+ * Agent Parser settings
+ *
+ * The core settings (status, which service parses what, general options, output) are in
+ * preferences.xhtml. Each provider brings its own section: an XHTML fragment and a script that
+ * defines AgentParserProviderSettings[<provider ID>] = { init(ctx), refresh(), update() }, where
+ * ctx = { plugin, provider, container }.
+ */
+window.AgentParserProviderSettings = window.AgentParserProviderSettings || {};
 
 window.AgentParserPrefs = {
 	_timer: null,
-	_refreshing: false,
-	_hadTask: false,
-	_lastLog: '',
 
 
-	init() {
+	async init() {
+		await this._renderRouting();
+		await this._loadProviderSections();
 		this.update();
 		this.updateQueueStatus();
 		this._timer = window.setInterval(() => {
-			Promise.all([this.updateQueueStatus(), this.refreshLocal()])
+			Promise.all([this.updateQueueStatus(), this._eachProviderSettings(x => x.refresh?.())])
 				.catch(() => window.clearInterval(this._timer));
 		}, 1500);
 		window.addEventListener('unload', () => window.clearInterval(this._timer), { once: true });
@@ -23,186 +32,147 @@ window.AgentParserPrefs = {
 	},
 
 
+	get _providers() {
+		return this._plugin ? this._plugin.providers.list() : [];
+	},
+
+
 	/**
 	 * Called from oncommand/oninput handlers, which run before the pane copies the new value
 	 * into the pref
 	 */
-	update({ refresh = false } = {}) {
-		window.setTimeout(() => this._update({ refresh }));
+	update() {
+		window.setTimeout(() => this._update());
 	},
 
 
-	_update({ refresh }) {
+	_update() {
+		if (!this._plugin) {
+			return;
+		}
+		this._updateRoutingWarning();
+		this._eachProviderSettings(x => x.update?.());
+	},
+
+
+	async _eachProviderSettings(fn) {
+		for (let provider of this._providers) {
+			let settings = window.AgentParserProviderSettings[provider.id];
+			if (settings) {
+				try {
+					await fn(settings);
+				}
+				catch (e) {
+					Zotero.logError(e);
+				}
+			}
+		}
+	},
+
+
+	/**
+	 * The default service, and the one for large requests
+	 */
+	async _renderRouting() {
 		let plugin = this._plugin;
 		if (!plugin) {
 			return;
 		}
-		let full = !!plugin.local;
-		for (let elem of document.querySelectorAll('.agentparser-full-only')) {
-			elem.hidden = !full;
+		let providers = this._providers;
+		let names = {};
+		for (let provider of providers) {
+			names[provider.id] = await plugin.getString(provider.l10n.name);
 		}
-		for (let elem of document.querySelectorAll('.agentparser-lite-only')) {
-			elem.hidden = full;
-		}
-		this._updateWarning();
-		if (!full) {
-			return;
-		}
-		
-		let managed = !!plugin.getPref('local.managed');
-		document.getElementById('agentparser-local-managed-section').hidden = !managed;
-		document.getElementById('agentparser-local-external-section').hidden = managed;
 
-		let tier = plugin.local.getTier();
-		document.l10n.setAttributes(document.getElementById('agentparser-tier-desc'), 'agentparser-tier-desc-' + tier);
+		// Bind the prefs only once the choices exist, so that the current value gets selected
+		let radiogroup = document.getElementById('agentparser-default-provider');
+		radiogroup.removeAttribute('preference');
+		radiogroup.replaceChildren(...providers.map((provider) => {
+			let radio = document.createXULElement('radio');
+			radio.setAttribute('value', provider.id);
+			radio.setAttribute('label', names[provider.id]);
+			return radio;
+		}));
+		radiogroup.setAttribute('preference', 'extensions.agentparser.defaultProvider');
 
-		this.refreshLocal({ refresh });
+		let batchProviders = providers.filter(x => x.maxBatch);
+		let menulist = document.getElementById('agentparser-bulk-provider');
+		menulist.removeAttribute('preference');
+		let popup = menulist.menupopup;
+		let same = document.createXULElement('menuitem');
+		same.setAttribute('value', '');
+		document.l10n.setAttributes(same, 'agentparser-pref-bulk-provider-default');
+		popup.replaceChildren(same, ...batchProviders.map((provider) => {
+			let item = document.createXULElement('menuitem');
+			item.setAttribute('value', provider.id);
+			item.setAttribute('label', names[provider.id]);
+			return item;
+		}));
+		menulist.setAttribute('preference', 'extensions.agentparser.bulkProvider');
+
+		// With a single service there's nothing to choose
+		let single = providers.length < 2;
+		radiogroup.hidden = single;
+		document.getElementById('agentparser-bulk-row').hidden = single || !batchProviders.length;
+		document.getElementById('agentparser-single-provider-desc').hidden = !single;
 	},
 
 
-	_updateWarning() {
+	_updateRoutingWarning() {
 		let plugin = this._plugin;
-		let warning = document.getElementById('agentparser-mode-warning');
-		let warningID = null;
-		if (!plugin.hasCloudToken()) {
-			if (plugin.getDefaultBackend() != 'local') {
-				warningID = plugin.local ? 'agentparser-warn-no-token' : 'agentparser-warn-no-token-lite';
-			}
-			else if (plugin.getPref('bulkUseCloud')) {
-				warningID = 'agentparser-warn-bulk-no-token';
-			}
-		}
-		warning.hidden = !warningID;
-		if (warningID) {
-			document.l10n.setAttributes(warning, warningID);
-		}
-	},
-
-
-	async refreshLocal({ refresh = false } = {}) {
-		let plugin = this._plugin;
-		if (!plugin?.local || this._refreshing) {
-			return;
-		}
-		this._refreshing = true;
-		try {
-			let status = await plugin.local.getStatus({ refresh: refresh || (this._hadTask && !plugin.local._task) });
-			this._hadTask = !!status.task;
-			this._renderLocal(status);
-		}
-		finally {
-			this._refreshing = false;
-		}
-	},
-
-
-	_renderLocal(status) {
-		let $ = id => document.getElementById(id);
-		let l10n = (elem, id, args) => document.l10n.setAttributes($(elem), id, args);
-
-		if (status.task) {
-			let minutes = Math.floor((Date.now() - status.task.startedAt) / 60000);
-			l10n('agentparser-local-env-status', 'agentparser-local-step-' + status.task.step, { minutes });
-		}
-		else if (status.installed) {
-			l10n('agentparser-local-env-status', 'agentparser-local-env-ok', {
-				version: status.mineruVersion,
-				engine: status.engine == 'mlx' ? 'MLX' : 'auto',
-				dir: status.envDir
+		let warning = document.getElementById('agentparser-routing-warning');
+		let bulk = plugin.getBulkProvider();
+		let issue = bulk && bulk != plugin.getDefaultProvider() && plugin.getProviderSetupIssue(bulk);
+		warning.hidden = !issue;
+		if (issue) {
+			plugin.getProviderName(bulk).then((name) => {
+				document.l10n.setAttributes(warning, 'agentparser-pref-bulk-not-ready', { provider: name });
 			});
 		}
-		else {
-			l10n('agentparser-local-env-status', 'agentparser-local-env-missing', { dir: status.envDir });
-		}
-
-		if (!status.installed) {
-			l10n('agentparser-local-models-status', 'agentparser-local-unknown');
-		}
-		else {
-			l10n('agentparser-local-models-status',
-				status.modelsReady ? 'agentparser-local-models-ok' : 'agentparser-local-models-missing',
-				{ tier: status.tier });
-		}
-
-		if (status.server) {
-			l10n('agentparser-local-server-status',
-				status.server.starting ? 'agentparser-local-server-starting' : 'agentparser-local-server-running',
-				{ pid: String(status.server.pid || ''), url: status.server.url });
-		}
-		else {
-			l10n('agentparser-local-server-status', 'agentparser-local-server-stopped');
-		}
-
-		let busy = !!status.task;
-		let install = $('agentparser-local-install');
-		install.disabled = busy;
-		document.l10n.setAttributes(install,
-			status.installed && status.modelsReady ? 'agentparser-local-update' : 'agentparser-local-install');
-		$('agentparser-local-cancel').hidden = !busy;
-		$('agentparser-local-start').disabled = busy || !status.installed || !status.modelsReady || !!status.server;
-		$('agentparser-local-stop').disabled = !status.server;
-
-		let log = $('agentparser-local-log');
-		let text = status.log.join('\n');
-		if (text != this._lastLog) {
-			this._lastLog = text;
-			log.value = text;
-			log.scrollTop = log.scrollHeight;
-		}
 	},
 
 
-	async install() {
+	/**
+	 * Insert each provider's settings section
+	 */
+	async _loadProviderSections() {
 		let plugin = this._plugin;
-		let tier = plugin.local.getTier();
-		let message = await plugin.getString('agentparser-local-install-confirm', {
-			size: tier == 'basic' ? '2.6' : '4.8',
-			dir: plugin.local.getEnvDir()
-		});
-		if (!window.confirm(message)) {
+		let container = document.getElementById('agentparser-provider-sections');
+		if (!plugin || !container) {
 			return;
 		}
-		plugin.local.install()
-			.catch(e => Zotero.debug('Agent Parser: Install failed: ' + e))
-			.finally(() => {
-				this.refreshLocal({ refresh: true });
-				plugin.refreshSetup();
-			});
-		this._hadTask = true;
-		this.refreshLocal();
-		// Jobs for local MinerU wait while it's being installed
-		plugin._changed();
-	},
+		container.replaceChildren();
+		document.l10n.addResourceIds(plugin.getFTLFiles().slice(1));
+		for (let provider of this._providers) {
+			if (!provider.settings) {
+				continue;
+			}
+			try {
+				let section = document.createXULElement('groupbox');
+				section.id = 'agentparser-provider-' + provider.id;
+				let heading = document.createXULElement('label');
+				let h2 = document.createElementNS('http://www.w3.org/1999/xhtml', 'h2');
+				document.l10n.setAttributes(h2, provider.l10n.name);
+				heading.append(h2);
+				section.append(heading);
 
+				let markup = await Zotero.File.getContentsFromURLAsync(plugin.rootURI + provider.settings.fragment);
+				section.append(window.MozXULElement.parseXULToFragment(markup));
+				container.append(section);
 
-	cancelInstall() {
-		this._plugin?.local.cancelInstall();
-	},
-
-
-	async stopServer() {
-		await this._plugin?.local.stopServer();
-		this.refreshLocal();
-	},
-
-
-	async test(backend) {
-		let plugin = this._plugin;
-		let resultLabel = document.getElementById('agentparser-test-result-' + backend);
-		if (!plugin) {
-			return;
+				if (provider.settings.script) {
+					Services.scriptloader.loadSubScript(plugin.rootURI + provider.settings.script, window);
+					await window.AgentParserProviderSettings[provider.id]?.init?.({
+						plugin,
+						provider,
+						container: section
+					});
+				}
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
 		}
-		resultLabel.value = backend == 'local' && plugin.local?.isManaged()
-			? await plugin.getString('agentparser-local-starting-hint')
-			: '…';
-		try {
-			let result = await plugin.createBackend(backend).test();
-			resultLabel.value = '✅ ' + result;
-		}
-		catch (e) {
-			resultLabel.value = '❌ ' + (e.message || e);
-		}
-		this.refreshLocal();
 	},
 
 
@@ -214,11 +184,15 @@ window.AgentParserPrefs = {
 		}
 		this._renderSummary();
 		let { queued, running } = plugin.getStatus();
+		let names = {};
+		for (let provider of this._providers) {
+			names[provider.id] = await plugin.getString(provider.l10n.name);
+		}
 		label.value = await plugin.getString('agentparser-pref-queue-status', {
 			queued,
 			running: running.length,
 			details: running.length
-				? ' — ' + running.slice(0, 3).map(x => `${x.key} (${x.service == 'local' ? 'local' : 'cloud'}: ${x.status})`).join(', ')
+				? ' — ' + running.slice(0, 3).map(x => `${x.key} (${names[x.service] || x.service}: ${x.status})`).join(', ')
 					+ (running.length > 3 ? ', …' : '')
 				: ''
 		});
@@ -251,7 +225,7 @@ window.AgentParserPrefs = {
 			document.l10n.setAttributes(text, textID);
 		}
 		document.getElementById('agentparser-status-setup').hidden = !summary.setupIssue
-			|| summary.setupIssue.id == 'agentparser-setup-local-installing';
+			|| summary.setupIssue.installing;
 
 		let failuresLine = document.getElementById('agentparser-failures-line');
 		failuresLine.hidden = !summary.failed;
@@ -270,11 +244,10 @@ window.AgentParserPrefs = {
 		if (!issue) {
 			return;
 		}
-		let target = issue.backend == 'local'
-			? document.getElementById('agentparser-local-install')
-			: document.getElementById('agentparser-cloudv4-token');
+		let section = document.getElementById('agentparser-provider-' + issue.provider);
+		let target = section?.querySelector('[data-setup-focus]') || section;
 		target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-		target?.focus();
+		target?.focus?.();
 	},
 
 

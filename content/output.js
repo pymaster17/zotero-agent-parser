@@ -114,7 +114,12 @@ var AgentParserOutput = {
 	 * Everything else the parser returns (JSON intermediates, a copy of the PDF, crops of equations
 	 * and tables that full.md contains as LaTeX/HTML, etc.) is removed.
 	 */
-	async finalize(stagingDir, { item, attachment, filePath, sha256, parser }) {
+	/**
+	 * @param {Object} options.parser - What the provider returned, with at least `service`
+	 * @param {Object} [options.parserFields] - Provider-specific front matter, written as
+	 *     parser_<name>
+	 */
+	async finalize(stagingDir, { item, attachment, filePath, sha256, parser, parserFields = {} }) {
 		await this._hoistSingleDirectory(stagingDir);
 		
 		let files = await this._listFiles(stagingDir);
@@ -138,6 +143,7 @@ var AgentParserOutput = {
 		let meta = {
 			parsedAt: new Date().toISOString(),
 			parser,
+			parserFields,
 			source: {
 				attachmentKey: attachment.key,
 				fileName: PathUtils.filename(filePath),
@@ -282,11 +288,10 @@ var AgentParserOutput = {
 		add('source_file', source.fileName);
 		add('source_sha256', source.sha256);
 		add('parser', parser.service);
-		add('parser_model', parser.modelVersion);
-		add('parser_ocr', parser.isOCR || null);
+		for (let [name, value] of Object.entries(meta.parserFields || {})) {
+			add('parser_' + name, value);
+		}
 		add('parser_fallback_reason', parser.fallbackReason);
-		add('parser_input', parser.input);
-		add('parser_source_url', parser.input == 'url' ? parser.sourceURL : null);
 		add('parsed_at', meta.parsedAt);
 		lines.push('---', '', '');
 		return lines.join('\n');

@@ -2,7 +2,8 @@
 
 var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 var AgentParser;
-var AgentParserEdition;
+var AgentParserProviders;
+var AgentParserBundledProviders;
 var AgentParserUI;
 var chromeHandle;
 
@@ -23,14 +24,21 @@ async function startup({ id, version, rootURI }) {
 		['content', 'agentparser', rootURI + 'content/']
 	]);
 
-	Services.scriptloader.loadSubScript(rootURI + 'content/edition.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/http.js');
-	Services.scriptloader.loadSubScript(rootURI + 'content/backends.js');
-	// The lite edition is cloud-only and doesn't ship local MinerU support
-	if (AgentParserEdition == 'full') {
-		Services.scriptloader.loadSubScript(rootURI + 'content/local.js');
-	}
 	Services.scriptloader.loadSubScript(rootURI + 'content/output.js');
+	Services.scriptloader.loadSubScript(rootURI + 'content/providers.js');
+	// Parsing services in this edition
+	Services.scriptloader.loadSubScript(rootURI + 'content/providers/index.js');
+	for (let { dir, scripts } of AgentParserBundledProviders) {
+		try {
+			for (let script of scripts) {
+				Services.scriptloader.loadSubScript(`${rootURI}content/providers/${dir}/${script}`);
+			}
+		}
+		catch (e) {
+			Zotero.logError(e);
+		}
+	}
 	Services.scriptloader.loadSubScript(rootURI + 'content/main.js');
 	Services.scriptloader.loadSubScript(rootURI + 'content/ui.js');
 
@@ -77,8 +85,10 @@ function shutdown() {
 		Zotero.logError(e);
 	}
 	AgentParser?.shutdown();
+	AgentParserProviders?.unregisterAll();
 	AgentParser = undefined;
 	AgentParserUI = undefined;
+	AgentParserProviders = undefined;
 	chromeHandle?.destruct();
 	chromeHandle = null;
 }

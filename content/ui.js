@@ -1,4 +1,4 @@
-/* global Zotero, AgentParser */
+/* global Zotero, AgentParser, AgentParserProviders */
 
 /**
  * Status UI: a toolbar button, a column in the item tree, and a section in the item pane
@@ -15,6 +15,8 @@ var AgentParserUI = {
 	_windows: new Map(),
 	// Localized tooltips for item tree cells, which are rendered too often to localize each time
 	_tooltips: {},
+	// Localized provider names, for labels built synchronously
+	_providerNames: {},
 
 
 	get plugin() {
@@ -29,6 +31,7 @@ var AgentParserUI = {
 		let plugin = this.plugin;
 		this._unlisten = plugin.onChange(() => this._onChange());
 		this._loadTooltips();
+		this._loadProviderNames();
 
 		this._columnKey = Zotero.ItemTreeManager.registerColumn({
 			pluginID: plugin.id,
@@ -114,6 +117,18 @@ var AgentParserUI = {
 	},
 
 
+	async _loadProviderNames() {
+		for (let provider of AgentParserProviders.list()) {
+			this._providerNames[provider.id] = await this.plugin.getString(provider.l10n.name);
+		}
+	},
+
+
+	_providerName(id) {
+		return this._providerNames[id] || id || '';
+	},
+
+
 	_stateRank(state) {
 		return Math.max(0, ['failed', 'setup', 'running', 'queued', 'done', 'none'].indexOf(state));
 	},
@@ -153,6 +168,9 @@ var AgentParserUI = {
 
 	/**
 	 * Localized description of what a running or queued job is doing
+	 *
+	 * Running jobs are in one of the phases providers report (see AgentParserProviders.PHASES), or
+	 * in a phase of the core's own: 'waiting-file' or 'saving'.
 	 */
 	_statusL10nID(state) {
 		let { status } = state;
@@ -164,24 +182,13 @@ var AgentParserUI = {
 		}
 		switch (status) {
 			case 'waiting-file':
-				return 'agentparser-status-waiting-file';
-			case 'starting':
-			case 'counting pages':
-			case 'hashing':
-			case 'checking-url':
-				return 'agentparser-status-preparing';
-			case 'queued':
-			case 'pending':
-			case 'waiting-upload':
-			case 'waiting-file-upload':
-				return 'agentparser-status-pending';
-			case 'submitting':
-			case 'submitting-url':
+			case 'preparing':
 			case 'uploading':
-				return 'agentparser-status-uploading';
+			case 'pending':
+			case 'parsing':
+				return 'agentparser-status-' + status;
 			case 'downloading':
 			case 'saving':
-			case 'done':
 				return 'agentparser-status-saving';
 			default:
 				return 'agentparser-status-parsing';
@@ -189,8 +196,18 @@ var AgentParserUI = {
 	},
 
 
-	_serviceL10nID(service) {
-		return service == 'local' ? 'agentparser-service-local' : 'agentparser-service-cloud';
+	/**
+	 * @return {Element} - The job's phase, with progress such as "3/10" if the provider gave one
+	 */
+	_statusElement(doc, state) {
+		let elem = doc.createElement('span');
+		doc.l10n.setAttributes(elem, this._statusL10nID(state));
+		if (state.progress) {
+			let wrapper = doc.createElement('span');
+			wrapper.append(elem, ' ' + state.progress);
+			return wrapper;
+		}
+		return elem;
 	},
 
 
@@ -245,18 +262,13 @@ var AgentParserUI = {
 				message.textContent = state.message || '';
 				if (limit) {
 					let hint = doc.createElement('div');
-					doc.l10n.setAttributes(hint, plugin.local && state.service != 'local'
-						? 'agentparser-limit-desc'
-						: 'agentparser-limit-desc-lite');
+					let others = AgentParserProviders.list().filter(x => x.id != state.service);
+					doc.l10n.setAttributes(hint, others.length ? 'agentparser-limit-desc' : 'agentparser-limit-desc-single');
 					message.append(hint);
 				}
 			}
 			else if (['running', 'queued', 'setup'].includes(shown)) {
-				let status = doc.createElement('span');
-				doc.l10n.setAttributes(status, this._statusL10nID(state));
-				let service = doc.createElement('span');
-				doc.l10n.setAttributes(service, this._serviceL10nID(state.service));
-				message.append(status, ' · ', service);
+				message.append(this._statusElement(doc, state), ' · ' + this._providerName(state.service));
 			}
 			else if (shown == 'none') {
 				doc.l10n.setAttributes(message, plugin.getPref('autoParse')
@@ -270,9 +282,9 @@ var AgentParserUI = {
 			// Actions
 			let buttons = doc.createElement('div');
 			buttons.className = 'agentparser-row-buttons';
-			let button = (l10nID, onClick) => {
+			let button = (l10nID, onClick, args) => {
 				let elem = doc.createElement('button');
-				doc.l10n.setAttributes(elem, l10nID);
+				doc.l10n.setAttributes(elem, l10nID, args);
 				elem.addEventListener('click', (event) => {
 					event.stopPropagation();
 					onClick();
@@ -283,21 +295,16 @@ var AgentParserUI = {
 			if (shown == 'setup') {
 				button('agentparser-action-open-settings', () => plugin.openPreferences());
 			}
-			else if (limit) {
-				// The same service would reject it again
-				if (plugin.local && state.service != 'local') {
-					button('agentparser-action-parse-local', () => plugin.enqueue(attachment, { force: true, backend: 'local' }));
-				}
-				else if (state.service == 'local') {
+			else if (shown == 'failed') {
+				let others = AgentParserProviders.list().filter(x => x.id != state.service);
+				// The same service would reject a file outside its limits again
+				if (!limit) {
 					button('agentparser-action-retry', () => plugin.enqueue(attachment, { force: true }));
 				}
-			}
-			else if (shown == 'failed') {
-				button('agentparser-action-retry', () => plugin.enqueue(attachment, { force: true }));
-				if (plugin.local) {
-					let other = state.service == 'local' ? 'cloudV4' : 'local';
-					button(other == 'local' ? 'agentparser-action-retry-local' : 'agentparser-action-retry-cloud',
-						() => plugin.enqueue(attachment, { force: true, backend: other }));
+				for (let other of others) {
+					button(limit ? 'agentparser-action-parse-with' : 'agentparser-action-retry-with',
+						() => plugin.enqueue(attachment, { force: true, provider: other.id }),
+						{ provider: this._providerName(other.id) });
 				}
 			}
 			else if (shown == 'none') {
@@ -489,18 +496,25 @@ var AgentParserUI = {
 			button.removeAttribute('badge');
 			button.removeAttribute('badgekind');
 		}
-		let tooltip = {
-			busy: 'agentparser-light-busy-button',
-			error: summary.setupIssue && !summary.failed
-				? summary.setupIssue.id + '-button'
-				: 'agentparser-light-error-button',
-			ok: summary.autoParse ? 'agentparser-light-ok-button' : 'agentparser-light-ok-paused-button'
-		}[light];
-		win.document.l10n.setAttributes(button, tooltip, {
+		let args = {
 			running: summary.running.length,
 			queued: summary.queued,
 			failed: summary.failed
-		});
+		};
+		if (light == 'error' && summary.setupIssue && !summary.failed) {
+			// The provider describes what's missing
+			this.plugin.getString(summary.setupIssue.id)
+				.then(issue => win.document.l10n.setAttributes(button, 'agentparser-light-setup-button', { issue }))
+				.catch(() => {});
+		}
+		else {
+			let tooltip = {
+				busy: 'agentparser-light-busy-button',
+				error: 'agentparser-light-error-button',
+				ok: summary.autoParse ? 'agentparser-light-ok-button' : 'agentparser-light-ok-paused-button'
+			}[light];
+			win.document.l10n.setAttributes(button, tooltip, args);
+		}
 		let elements = this._windows.get(win);
 		if (elements?.panel?.state == 'open') {
 			this._renderPanel(win, elements.content);
@@ -544,6 +558,7 @@ var AgentParserUI = {
 			return [attachment, title];
 		};
 		// Clicking a file shows it in the item list
+		// detailL10n: an element describing what's going on, or detailText: plain text
 		let fileRow = (key, fallbackTitle, state, detailL10n, detailText) => {
 			let [attachment, title] = titleOf(key, fallbackTitle);
 			let row = el('div', 'agentparser-panel-file');
@@ -551,7 +566,10 @@ var AgentParserUI = {
 			let text = el('div', 'agentparser-panel-file-text');
 			let name = el('div', 'agentparser-panel-file-title');
 			name.textContent = title;
-			let detail = detailL10n ? el('div', 'agentparser-panel-file-detail', ...detailL10n) : el('div', 'agentparser-panel-file-detail');
+			let detail = el('div', 'agentparser-panel-file-detail');
+			if (detailL10n) {
+				detail.append(detailL10n);
+			}
 			if (detailText) {
 				detail.textContent = detailText;
 				detail.title = detailText;
@@ -582,7 +600,7 @@ var AgentParserUI = {
 		if (summary.setupIssue) {
 			let box = el('div', 'agentparser-panel-notice');
 			box.append(icon('setup'), el('span', null, summary.setupIssue.id));
-			if (summary.setupIssue.id != 'agentparser-setup-local-installing') {
+			if (!summary.setupIssue.installing) {
 				let open = el('a', 'agentparser-panel-link', 'agentparser-panel-open-settings');
 				open.addEventListener('click', () => {
 					content.closest('panel')?.hidePopup();
@@ -594,13 +612,15 @@ var AgentParserUI = {
 		}
 
 		// Each service's queue
-		let services = Object.keys(details).sort((a, b) => (a == 'cloudV4' ? -1 : b == 'cloudV4' ? 1 : 0));
+		let order = AgentParserProviders.list().map(x => x.id);
+		let rank = id => (order.includes(id) ? order.indexOf(id) : order.length);
+		let services = Object.keys(details).sort((a, b) => rank(a) - rank(b));
 		for (let name of services) {
 			let service = details[name];
 			let section = el('div', 'agentparser-panel-section');
 			let title = el('div', 'agentparser-panel-section-title');
 			title.append(
-				el('span', null, name == 'local' ? 'agentparser-service-local' : 'agentparser-service-cloud'),
+				Object.assign(el('span'), { textContent: this._providerName(name) }),
 				el('span', 'agentparser-panel-counts', 'agentparser-panel-counts', {
 					running: service.running.length,
 					queued: service.queued,
@@ -611,7 +631,7 @@ var AgentParserUI = {
 			section.append(title);
 			for (let job of service.running.slice(0, this.MAX_MENU_ITEMS)) {
 				section.append(fileRow(job.key, job.title, 'running',
-					[this._statusL10nID({ state: 'running', status: job.status })]));
+					this._statusElement(doc, { state: 'running', status: job.status, progress: job.progress })));
 			}
 			if (service.running.length > this.MAX_MENU_ITEMS) {
 				section.append(el('div', 'agentparser-panel-more', 'agentparser-menu-more',

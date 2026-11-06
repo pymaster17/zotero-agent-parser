@@ -1,260 +1,9 @@
-/* global Zotero, AgentParserHTTP, AgentParserOutput */
+/* global Zotero, AgentParserHTTP, AgentParserOutput, AgentParserProviders */
 
 /**
- * Parsing backends
- *
- * Each backend exposes `async parse(job)`, which must leave the raw parse results in
- * `job.stagingDir` and return an object describing the parser.
- *
- * job = {
- *   filePath, fileName, fileSize, sha256,
- *   uploadName      -- ASCII-safe file name to send to the service
- *   stagingDir      -- empty directory for the extracted results
- *   tempDir         -- scratch directory for downloads
- *   pollInterval    -- milliseconds
- *   timeout         -- milliseconds to wait once the service starts working on the file
- *   queueTimeout    -- milliseconds to wait while the service still has the file queued
- *   onStatus(str)   -- progress callback
- *   checkCancelled()-- throws if the job should stop
- * }
+ * MinerU cloud service (mineru.net v4 API)
  */
-var AgentParserBackends = {
-	create(name, getPref) {
-		let cls = this.classFor(name);
-		if (!cls) {
-			throw new Error(`Unknown backend '${name}'`);
-		}
-		return new cls(getPref);
-	},
-	
-	
-	classFor(name) {
-		switch (name) {
-			case 'local':
-				// Not included in the lite (cloud-only) edition
-				return AgentParserBackends.Local || null;
-			case 'cloudV4':
-				return AgentParserBackends.CloudV4;
-			default:
-				return null;
-		}
-	},
-
-
-	trimURL(url) {
-		url = (url || '').trim().replace(/\/+$/, '');
-		if (!url) {
-			throw new Error("Service URL is not configured");
-		}
-		return url;
-	},
-
-
-	async readFile(path) {
-		return IOUtils.read(path);
-	},
-
-
-	/**
-	 * Poll until `fn` returns a non-undefined value
-	 *
-	 * Services that report queueing set `job.queued` while the file waits on the server and
-	 * `job.startedAt` once processing starts, so that `job.timeout` only covers actual parsing.
-	 * Otherwise the timeout runs from the start of polling.
-	 */
-	async poll(job, fn, since = Date.now()) {
-		while (true) {
-			job.checkCancelled();
-			let result;
-			try {
-				result = await fn();
-			}
-			catch (e) {
-				// Keep polling through dropped connections and server hiccups
-				if (!AgentParserHTTP.isTransientError(e)) {
-					throw e;
-				}
-				job.checkCancelled();
-				Zotero.debug(`Agent Parser: Polling for ${job.dataID} failed (${e.message}) -- trying again`);
-			}
-			if (result !== undefined) {
-				return result;
-			}
-			if (this.isTimedOut(job, since)) {
-				throw new Error("Timed out waiting for parse results");
-			}
-			await AgentParserHTTP.sleep(job.pollInterval);
-		}
-	},
-	
-	
-	isTimedOut({ queued, startedAt, timeout, queueTimeout }, submittedAt) {
-		let now = Date.now();
-		if (queued) {
-			return now - submittedAt > queueTimeout;
-		}
-		return now - (startedAt || submittedAt) > timeout;
-	},
-	
-	
-	/**
-	 * Whether the service refused new work for now, in which case the file should go back in the
-	 * queue rather than fail
-	 */
-	isServerBusy(e) {
-		return !!e && AgentParserBackends.CloudV4.BUSY_CODES.has(e.code);
-	},
-
-
-	/**
-	 * Whether the service rejected the file for being outside its limits (size, pages), in which
-	 * case parsing it again with the same service fails the same way
-	 */
-	isLimitExceeded(e) {
-		return !!e && !!e.limitExceeded;
-	}
-};
-
-
-/**
- * MinerU >= 4 unified Tasks API (POST /v1/tasks), served by `mineru-kit api-server`
- */
-AgentParserBackends.Tasks = class {
-	static TERMINAL_STATUSES = new Set(['completed', 'partial', 'failed', 'canceled']);
-
-	constructor({ url, apiKey, tier, ocrMode }) {
-		this.baseURL = AgentParserBackends.trimURL(url);
-		this.apiKey = (apiKey || '').trim();
-		this.tier = tier || '';
-		this.ocrMode = ocrMode || 'auto';
-		this.serviceName = 'mineru-tasks';
-	}
-
-	_authHeaders(url) {
-		if (!this.apiKey || (url && !AgentParserHTTP.isSameOrigin(this.baseURL, url))) {
-			return {};
-		}
-		return { Authorization: 'Bearer ' + this.apiKey };
-	}
-
-	_resolve(url) {
-		return new URL(url, this.baseURL + '/').href;
-	}
-
-	_taskURL(taskID) {
-		return this.baseURL + '/v1/tasks/' + encodeURIComponent(taskID);
-	}
-
-	async test() {
-		let json = await AgentParserHTTP.json('GET', this.baseURL + '/v1/health', {
-			headers: this._authHeaders(),
-			timeout: 15000
-		});
-		return json.version ? `MinerU ${json.version}` : JSON.stringify(json).substr(0, 200);
-	}
-
-	async parse(job) {
-		let payload = {
-			files: [{
-				file_name: job.uploadName,
-				bytes: job.fileSize,
-				sha256sum: job.sha256
-			}],
-			output_formats: ['default']
-		};
-		if (this.tier) {
-			payload.tier = this.tier;
-		}
-		if (this.ocrMode) {
-			payload.ocr_mode = this.ocrMode;
-		}
-
-		job.onStatus('submitting');
-		let task = await AgentParserHTTP.json('POST', this.baseURL + '/v1/tasks', {
-			headers: {
-				...this._authHeaders(),
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify(payload)
-		});
-		this._checkTask(task);
-		Zotero.debug(`Agent Parser: Created MinerU task ${task.task_id}`);
-
-		let uploaded = false;
-		let first = true;
-		task = await AgentParserBackends.poll(job, async () => {
-			if (!first) {
-				task = await AgentParserHTTP.json('GET', this._taskURL(task.task_id), {
-					headers: this._authHeaders()
-				});
-				this._checkTask(task);
-				job.onStatus(task.files[0].status || task.status);
-			}
-			first = false;
-
-			let file = task.files[0];
-			// The server skips the upload if it already has a file with the same hash
-			if (!uploaded && file.status == 'waiting-file' && file.upload && file.upload.url) {
-				await this._upload(job, file.upload);
-				uploaded = true;
-			}
-			if (AgentParserBackends.Tasks.TERMINAL_STATUSES.has(task.status)) {
-				return task;
-			}
-			return undefined;
-		});
-
-		let file = task.files[0];
-		if (task.status == 'failed' || task.status == 'canceled' || file.status != 'completed') {
-			let err = task.error || file.error || {};
-			throw new Error(`MinerU task ${task.status}: ${err.message || err.code || file.status}`);
-		}
-		if (!file.result_url) {
-			throw new Error("MinerU task completed without result_url");
-		}
-
-		job.onStatus('downloading');
-		let resultURL = this._resolve(file.result_url);
-		let zipPath = PathUtils.join(job.tempDir, 'result.zip');
-		await AgentParserHTTP.download(resultURL, zipPath, {
-			headers: this._authHeaders(resultURL)
-		});
-		await AgentParserOutput.extractZip(zipPath, job.stagingDir);
-
-		return {
-			service: this.serviceName,
-			url: this.baseURL,
-			taskID: task.task_id,
-			tier: task.tier || this.tier || null,
-			ocrMode: this.ocrMode
-		};
-	}
-
-	async _upload(job, upload) {
-		job.onStatus('uploading');
-		let url = this._resolve(upload.url);
-		let headers = {};
-		for (let [key, value] of Object.entries(upload.headers || {})) {
-			// Set by fetch() itself
-			if (['content-length', 'transfer-encoding', 'host'].includes(key.toLowerCase())) {
-				continue;
-			}
-			headers[key] = value;
-		}
-		Object.assign(headers, this._authHeaders(url));
-		await AgentParserHTTP.upload(url, () => AgentParserBackends.readFile(job.filePath), {
-			headers,
-			checkCancelled: () => job.checkCancelled()
-		});
-	}
-
-	_checkTask(task) {
-		if (!task || typeof task.task_id != 'string' || !Array.isArray(task.files) || task.files.length != 1) {
-			throw new Error("Unexpected response from MinerU Tasks API: "
-				+ JSON.stringify(task).substr(0, 300));
-		}
-	}
-};
+var AgentParserMinerUCloud = {};
 
 
 /**
@@ -266,7 +15,7 @@ AgentParserBackends.Tasks = class {
  *
  * https://mineru.net/apiManage/docs
  */
-AgentParserBackends.CloudV4 = class {
+AgentParserMinerUCloud.Backend = class {
 	static MAX_BATCH = 50;
 	// The API rejects longer and larger files
 	static MAX_PAGES = 200;
@@ -277,21 +26,53 @@ AgentParserBackends.CloudV4 = class {
 	static LIMIT_CODES = new Set([-60005, -60006]);
 	// States before the server starts working on a file
 	static QUEUED_STATES = new Set(['waiting-file', 'pending']);
+	// Server states -> progress phases (see AgentParserProviders.PHASES)
+	static PHASES = {
+		'waiting-file': 'pending',
+		pending: 'pending',
+		running: 'parsing',
+		converting: 'parsing',
+		done: 'downloading'
+	};
+	
+	/**
+	 * Whether the service refused new work for now, in which case the file should go back in the
+	 * queue rather than fail
+	 */
+	static isBusy(e) {
+		return !!e && AgentParserMinerUCloud.Backend.BUSY_CODES.has(e.code);
+	}
+	
+	/**
+	 * @return {Array} - [phase, detail] for a result's state
+	 */
+	static phaseOf(result) {
+		let progress = result.extract_progress;
+		return [
+			AgentParserMinerUCloud.Backend.PHASES[result.state] || 'parsing',
+			progress && progress.total_pages ? `${progress.extracted_pages}/${progress.total_pages}` : null
+		];
+	}
 	
 	// Submissions older than this aren't resumed after a restart, since the service may have
 	// discarded them
 	static RESUME_MAX_AGE = 3 * 24 * 60 * 60 * 1000;
 	
-	constructor(getPref) {
-		this.baseURL = AgentParserBackends.trimURL(getPref('cloudV4.url'));
-		this.token = (getPref('cloudV4.token') || '').trim();
-		this.modelVersion = getPref('cloudV4.modelVersion') || 'vlm';
-		this.isOCR = !!getPref('cloudV4.isOCR');
-		this.enableFormula = !!getPref('cloudV4.enableFormula');
-		this.enableTable = !!getPref('cloudV4.enableTable');
-		this.language = getPref('cloudV4.language') || 'ch';
-		this.uploadAcceleration = getPref('cloudV4.uploadAcceleration') || 'auto';
-		this.urlHosts = (getPref('cloudV4.urlHosts') || '')
+	/**
+	 * @param {Function} getPref - This provider's prefs
+	 * @param {Object} [variant] - { model, ocr } to use instead of the configured model and OCR
+	 *     setting (see getFallback())
+	 */
+	constructor(getPref, variant = null) {
+		this.baseURL = AgentParserProviders.trimURL(getPref('url'));
+		this.token = (getPref('token') || '').trim();
+		this.modelVersion = variant?.model || getPref('modelVersion') || 'vlm';
+		this.isOCR = typeof variant?.ocr == 'boolean' ? variant.ocr : !!getPref('isOCR');
+		this.enableFormula = !!getPref('enableFormula');
+		this.enableTable = !!getPref('enableTable');
+		this.language = getPref('language') || 'ch';
+		this.uploadAcceleration = getPref('uploadAcceleration') || 'auto';
+		this.urlHosts = (getPref('urlHosts') || '')
 			.split(/[\s,;]+/)
 			.map(x => x.trim().toLowerCase().replace(/^\*?\./, ''))
 			.filter(Boolean);
@@ -311,7 +92,7 @@ AgentParserBackends.CloudV4 = class {
 		if (!json || json.code !== 0) {
 			let e = new Error(`MinerU API error: ${json && (json.msg || json.msgCode || json.code)}`);
 			e.code = json && json.code;
-			e.limitExceeded = AgentParserBackends.CloudV4.LIMIT_CODES.has(e.code);
+			e.limitExceeded = AgentParserMinerUCloud.Backend.LIMIT_CODES.has(e.code);
 			throw e;
 		}
 		return json.data;
@@ -383,7 +164,7 @@ AgentParserBackends.CloudV4 = class {
 				}
 				catch (e) {
 					job.checkCancelled();
-					if (AgentParserBackends.isServerBusy(e)) {
+					if (AgentParserMinerUCloud.Backend.isBusy(e)) {
 						throw e;
 					}
 					reason = e.message || String(e);
@@ -426,7 +207,7 @@ AgentParserBackends.CloudV4 = class {
 			&& typeof remote.id == 'string'
 			&& !!job.sha256 && remote.sha256 == job.sha256
 			&& remote.options == this._resumeKey()
-			&& Date.now() - remote.submittedAt < AgentParserBackends.CloudV4.RESUME_MAX_AGE;
+			&& Date.now() - remote.submittedAt < AgentParserMinerUCloud.Backend.RESUME_MAX_AGE;
 	}
 	
 	/**
@@ -440,7 +221,7 @@ AgentParserBackends.CloudV4 = class {
 		job.queued = true;
 		job.startedAt = null;
 		let path = remote.kind == 'task' ? '/extract/task/' : '/extract-results/batch/';
-		let result = await AgentParserBackends.poll(job, async () => {
+		let result = await AgentParserProviders.poll(job, async () => {
 			let data = this._check(await AgentParserHTTP.json(
 				'GET',
 				this.baseURL + path + encodeURIComponent(remote.id),
@@ -503,7 +284,7 @@ AgentParserBackends.CloudV4 = class {
 					timeout: batch.timeout,
 					queueTimeout: batch.queueTimeout
 				});
-				batch.onStatus(job, resumedAt || mode == 'url' ? 'pending' : 'waiting-upload');
+				batch.onStatus(job, 'pending');
 			}
 		};
 		// A submission from before a restart that the service no longer has gets submitted again
@@ -550,7 +331,7 @@ AgentParserBackends.CloudV4 = class {
 					}));
 				}
 				catch (e) {
-					if (!AgentParserBackends.isServerBusy(e)) {
+					if (!AgentParserMinerUCloud.Backend.isBusy(e)) {
 						throw e;
 					}
 					await defer(chunk, e);
@@ -575,7 +356,7 @@ AgentParserBackends.CloudV4 = class {
 						checkCancelled();
 						batch.onStatus(job, 'uploading');
 						try {
-							await AgentParserHTTP.upload(url, () => AgentParserBackends.readFile(job.filePath), {
+							await AgentParserHTTP.upload(url, () => AgentParserProviders.readFile(job.filePath), {
 								accelerate: this.uploadAcceleration,
 								checkCancelled
 							});
@@ -605,7 +386,7 @@ AgentParserBackends.CloudV4 = class {
 				continue;
 			}
 			if (job.sourceURL && this.isAllowedURL(job.sourceURL)) {
-				batch.onStatus(job, 'checking-url');
+				batch.onStatus(job, 'preparing');
 				let reason = await this.checkURL(job.sourceURL, job.fileSize);
 				if (!reason) {
 					urlJobs.push(job);
@@ -640,7 +421,7 @@ AgentParserBackends.CloudV4 = class {
 			}
 			catch (e) {
 				checkCancelled();
-				if (AgentParserBackends.isServerBusy(e)) {
+				if (AgentParserMinerUCloud.Backend.isBusy(e)) {
 					await defer(chunk, e);
 					continue;
 				}
@@ -734,19 +515,17 @@ AgentParserBackends.CloudV4 = class {
 						await fail(entry, new Error(`MinerU parsing failed: ${result.err_msg || 'unknown error'}`));
 					}
 					else if (entry.submittedAt) {
-						entry.queued = AgentParserBackends.CloudV4.QUEUED_STATES.has(result.state);
+						entry.queued = AgentParserMinerUCloud.Backend.QUEUED_STATES.has(result.state);
 						if (!entry.queued && !entry.startedAt) {
 							entry.startedAt = Date.now();
 						}
-						let progress = result.extract_progress;
-						batch.onStatus(entry.job, result.state
-							+ (progress && progress.total_pages ? ` ${progress.extracted_pages}/${progress.total_pages}` : ''));
+						batch.onStatus(entry.job, ...AgentParserMinerUCloud.Backend.phaseOf(result));
 					}
 				}
 			}
 			
 			for (let entry of [...pending.values()]) {
-				if (entry.submittedAt && AgentParserBackends.isTimedOut(entry, entry.submittedAt)) {
+				if (entry.submittedAt && AgentParserProviders.isTimedOut(entry, entry.submittedAt)) {
 					await fail(entry, new Error("Timed out waiting for parse results"));
 				}
 			}
@@ -755,8 +534,8 @@ AgentParserBackends.CloudV4 = class {
 	
 	_chunk(jobs) {
 		let chunks = [];
-		for (let i = 0; i < jobs.length; i += AgentParserBackends.CloudV4.MAX_BATCH) {
-			chunks.push(jobs.slice(i, i + AgentParserBackends.CloudV4.MAX_BATCH));
+		for (let i = 0; i < jobs.length; i += AgentParserMinerUCloud.Backend.MAX_BATCH) {
+			chunks.push(jobs.slice(i, i + AgentParserMinerUCloud.Backend.MAX_BATCH));
 		}
 		return chunks;
 	}
@@ -817,7 +596,7 @@ AgentParserBackends.CloudV4 = class {
 	async _parseURL(job, url) {
 		job.queued = false;
 		job.startedAt = null;
-		job.onStatus('submitting-url');
+		job.onStatus('preparing');
 		let data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/extract/task', {
 			headers: this._headers(),
 			body: JSON.stringify({
@@ -834,7 +613,7 @@ AgentParserBackends.CloudV4 = class {
 		Zotero.debug(`Agent Parser: Created MinerU URL task ${taskID}`);
 		this._submitted(job, { kind: 'task', id: taskID, mode: 'url' });
 		
-		let result = await AgentParserBackends.poll(job, async () => {
+		let result = await AgentParserProviders.poll(job, async () => {
 			let result = this._check(await AgentParserHTTP.json(
 				'GET',
 				this.baseURL + '/extract/task/' + encodeURIComponent(taskID),
@@ -850,7 +629,7 @@ AgentParserBackends.CloudV4 = class {
 	async _parseUpload(job) {
 		job.queued = false;
 		job.startedAt = null;
-		job.onStatus('submitting');
+		job.onStatus('preparing');
 		let dataID = job.dataID;
 		let data = this._check(await AgentParserHTTP.json('POST', this.baseURL + '/file-urls/batch', {
 			headers: this._headers(),
@@ -872,13 +651,13 @@ AgentParserBackends.CloudV4 = class {
 		
 		// Presigned URL -- must not send Content-Type or Authorization
 		job.onStatus('uploading');
-		await AgentParserHTTP.upload(uploadURL, () => AgentParserBackends.readFile(job.filePath), {
+		await AgentParserHTTP.upload(uploadURL, () => AgentParserProviders.readFile(job.filePath), {
 			accelerate: this.uploadAcceleration,
 			checkCancelled: () => job.checkCancelled()
 		});
 		this._submitted(job, { kind: 'batch', id: batchID, mode: 'upload' });
 		
-		let result = await AgentParserBackends.poll(job, async () => {
+		let result = await AgentParserProviders.poll(job, async () => {
 			let data = this._check(await AgentParserHTTP.json(
 				'GET',
 				this.baseURL + '/extract-results/batch/' + encodeURIComponent(batchID),
@@ -905,13 +684,11 @@ AgentParserBackends.CloudV4 = class {
 		if (result.state == 'failed') {
 			throw new Error(`MinerU parsing failed: ${result.err_msg || 'unknown error'}`);
 		}
-		job.queued = AgentParserBackends.CloudV4.QUEUED_STATES.has(result.state);
+		job.queued = AgentParserMinerUCloud.Backend.QUEUED_STATES.has(result.state);
 		if (!job.queued && !job.startedAt) {
 			job.startedAt = Date.now();
 		}
-		let progress = result.extract_progress;
-		job.onStatus(result.state
-			+ (progress && progress.total_pages ? ` ${progress.extracted_pages}/${progress.total_pages}` : ''));
+		job.onStatus(...AgentParserMinerUCloud.Backend.phaseOf(result));
 		return undefined;
 	}
 	
@@ -924,3 +701,120 @@ AgentParserBackends.CloudV4 = class {
 		await AgentParserOutput.extractZip(zipPath, job.stagingDir);
 	}
 };
+
+
+AgentParserProviders.register({
+	apiVersion: 1,
+	id: 'mineru-cloud',
+	kind: 'cloud',
+	ftl: 'agent-parser-mineru-cloud.ftl',
+	l10n: {
+		name: 'agentparser-provider-mineru-cloud',
+		confirmBulk: 'agentparser-mineru-cloud-confirm-library'
+	},
+	defaultPrefs: {
+		url: 'https://mineru.net/api/v4',
+		token: '',
+		modelVersion: 'vlm',
+		isOCR: false,
+		enableFormula: true,
+		enableTable: true,
+		language: 'ch',
+		// "auto", "always", or "off": upload through the storage service's accelerated endpoint
+		uploadAcceleration: 'auto',
+		// Hosts whose PDFs are submitted by URL instead of being uploaded
+		urlHosts: 'arxiv.org, aclanthology.org, isca-archive.org, jmlr.org, openaccess.thecvf.com, '
+			+ 'proceedings.iclr.cc, proceedings.mlr.press, proceedings.neurips.cc',
+		concurrency: '4'
+	},
+	legacy: {
+		ids: ['cloudV4', 'cloud'],
+		prefs: {
+			'cloudV4.url': 'url',
+			'cloudV4.token': 'token',
+			'cloudV4.modelVersion': 'modelVersion',
+			'cloudV4.isOCR': 'isOCR',
+			'cloudV4.enableFormula': 'enableFormula',
+			'cloudV4.enableTable': 'enableTable',
+			'cloudV4.language': 'language',
+			'cloudV4.uploadAcceleration': 'uploadAcceleration',
+			'cloudV4.urlHosts': 'urlHosts',
+			concurrency: 'concurrency'
+		}
+	},
+	limits: {
+		maxPages: AgentParserMinerUCloud.Backend.MAX_PAGES,
+		maxFileSize: AgentParserMinerUCloud.Backend.MAX_FILE_SIZE
+	},
+	maxBatch: AgentParserMinerUCloud.Backend.MAX_BATCH,
+	settings: {
+		fragment: 'content/providers/mineru-cloud/settings.xhtml',
+		script: 'content/providers/mineru-cloud/settings.js'
+	},
+
+
+	getConcurrency(ctx) {
+		let value = parseInt(ctx.getPref('concurrency'));
+		return value > 0 ? value : 1;
+	},
+
+
+	getSetupIssue(ctx) {
+		if (!(ctx.getPref('token') || '').trim()) {
+			return { l10nID: 'agentparser-mineru-cloud-setup-token' };
+		}
+		return null;
+	},
+
+
+	classifyError(e) {
+		if (AgentParserMinerUCloud.Backend.isBusy(e)) {
+			return 'busy';
+		}
+		if (e && AgentParserMinerUCloud.Backend.LIMIT_CODES.has(e.code)) {
+			return 'limit';
+		}
+		return 'error';
+	},
+
+
+	/**
+	 * Choose how to parse a file again after its output repeated itself
+	 *
+	 * Parsing again the same way doesn't help, since the service produces the same output for
+	 * the same file. Without OCR, the "vlm" model (actually MinerU's hybrid backend) takes text
+	 * from the PDF's text layer and reads inline formulas with a small formula model, which is
+	 * where most loops come from -- and the pipeline model uses that same formula model. With
+	 * OCR, the VLM reads whole lines, formulas included. If that still loops, the pipeline model's
+	 * separate layout, OCR, and table models are the last resort.
+	 */
+	getFallback(parserInfo) {
+		if (parserInfo.modelVersion != 'vlm') {
+			return null;
+		}
+		if (!parserInfo.isOCR) {
+			return { variant: { model: 'vlm', ocr: true }, description: 'the vlm model and OCR' };
+		}
+		return { variant: { model: 'pipeline', ocr: null }, description: 'the pipeline model' };
+	},
+
+
+	describe(parserInfo) {
+		return (parserInfo.modelVersion || 'default') + (parserInfo.isOCR ? '+ocr' : '');
+	},
+
+
+	frontMatter(parserInfo) {
+		return {
+			model: parserInfo.modelVersion,
+			ocr: parserInfo.isOCR || null,
+			input: parserInfo.input,
+			source_url: parserInfo.input == 'url' ? parserInfo.sourceURL : null
+		};
+	},
+
+
+	create(ctx, variant) {
+		return new AgentParserMinerUCloud.Backend(ctx.getPref, variant);
+	}
+});

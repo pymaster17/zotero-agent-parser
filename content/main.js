@@ -1,11 +1,9 @@
-/* global Zotero, AgentParserBackends, AgentParserOutput, AgentParserLocal, AgentParserUI, Localization */
+/* global Zotero, Services, AgentParserProviders, AgentParserOutput, AgentParserUI, Localization */
 
 AgentParser = {
 	PREF_PREFIX: 'extensions.agentparser.',
 	FTL: 'agent-parser.ftl',
-	// The v4 API accepts up to 50 files per request
-	BATCH_SIZE: 50,
-	// Batches in flight at once. The server parses submitted files in parallel, so this hands it
+	// Batches in flight at once. Servers parse submitted files in parallel, so this hands them
 	// plenty of work, while limiting simultaneous uploads (each reads a whole PDF into memory).
 	MAX_BATCHES: 4,
 	// How long a file may wait in the server's queue before we give up on it
@@ -43,36 +41,50 @@ AgentParser = {
 	_lastDone: 0,
 	_doneTimer: null,
 	_prefObservers: [],
+	_providerPrefObserver: null,
+	_setupTimers: new Map(),
 	_setupNotified: false,
+	_providerContexts: new Map(),
 
 
 	init({ id, version, rootURI }) {
 		this.id = id;
 		this.version = version;
 		this.rootURI = rootURI;
-		this._l10n = typeof Localization != 'undefined' ? new Localization([this.FTL]) : null;
+		this._l10n = typeof Localization != 'undefined' ? new Localization(this.getFTLFiles()) : null;
+		this._migrateRoutingPrefs();
 		// Load the saved queue before anything can add to it, since saving the queue overwrites it
 		this._loadQueue();
 		this._loadFailures();
 		this._notifierID = Zotero.Notifier.registerObserver(this, ['item'], 'agentParser');
-		// Only in the full edition
-		this.local = typeof AgentParserLocal != 'undefined' ? AgentParserLocal : null;
-		this.local?.init(name => this.getPref(name));
-		// Let the preferences pane and other code reach us
+		for (let provider of AgentParserProviders.list()) {
+			try {
+				provider.init?.(this.getProviderContext(provider.id));
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
+		// Let the preferences pane and other code reach us, and the providers
+		this.providers = AgentParserProviders;
 		Zotero.AgentParser = this;
 		
 		// Setup can be completed (or broken) from the preferences, so recheck whether queued jobs can run
-		for (let name of ['mode', 'cloudV4.token', 'bulkUseCloud', 'local.managed', 'local.tier', 'local.envDir', 'autoParse']) {
+		for (let name of ['defaultProvider', 'bulkProvider', 'autoParse']) {
 			this._prefObservers.push(Zotero.Prefs.registerObserver(this.PREF_PREFIX + name, () => {
-				if (name.startsWith('local.')) {
-					this.refreshSetup();
-				}
-				else {
-					this._changed();
-					this._schedulePump();
-				}
+				this._changed();
+				this._schedulePump();
 			}, true));
 		}
+		this._providerPrefObserver = {
+			observe: (subject, topic, prefName) => {
+				let id = prefName.substr(AgentParserProviders.PREF_PREFIX.length).split('.')[0];
+				if (AgentParserProviders.get(id)) {
+					this._scheduleRefreshSetup(id);
+				}
+			}
+		};
+		Services.prefs.addObserver(AgentParserProviders.PREF_PREFIX, this._providerPrefObserver);
 	},
 
 
@@ -85,6 +97,13 @@ AgentParser = {
 			Zotero.Prefs.unregisterObserver(symbol);
 		}
 		this._prefObservers = [];
+		if (this._providerPrefObserver) {
+			Services.prefs.removeObserver(AgentParserProviders.PREF_PREFIX, this._providerPrefObserver);
+			this._providerPrefObserver = null;
+		}
+		for (let timer of this._setupTimers.values()) {
+			clearTimeout(timer);
+		}
 		this._listeners.clear();
 		if (this._notifierID) {
 			Zotero.Notifier.unregisterObserver(this._notifierID);
@@ -93,7 +112,11 @@ AgentParser = {
 		for (let win of Zotero.getMainWindows()) {
 			this.removeFromWindow(win);
 		}
-		this.local?.shutdown().catch(e => Zotero.logError(e));
+		for (let provider of AgentParserProviders.list()) {
+			Promise.resolve()
+				.then(() => provider.shutdown?.())
+				.catch(e => Zotero.logError(e));
+		}
 		// Leave the persisted queue in place so pending and running jobs resume on next startup
 		delete Zotero.AgentParser;
 	},
@@ -115,33 +138,94 @@ AgentParser = {
 	},
 
 
+	//
+	// Providers
+	//
+	
 	/**
-	 * @param {String} name
-	 * @param {Object} [overrides]
-	 * @param {String} [overrides.model] - Cloud model version to use instead of the configured one
-	 * @param {Boolean} [overrides.ocr] - Whether the cloud service should OCR the file instead of
-	 *     using its text layer, overriding the configured setting
+	 * Language files of the core and every provider
 	 */
-	createBackend(name, { model = null, ocr = null } = {}) {
-		return AgentParserBackends.create(name, (prefName) => {
-			if (model && prefName == 'cloudV4.modelVersion') {
-				return model;
-			}
-			if (ocr !== null && prefName == 'cloudV4.isOCR') {
-				return ocr;
-			}
-			return this.getPref(prefName);
-		});
+	getFTLFiles() {
+		return [this.FTL, ...AgentParserProviders.list().map(x => x.ftl).filter(Boolean)];
 	},
 	
 	
-	getDefaultBackend() {
-		return this.local && this.getPref('mode') == 'local' ? 'local' : 'cloudV4';
+	/**
+	 * What a provider gets to work with: its own prefs, and the plugin
+	 */
+	getProviderContext(id) {
+		let ctx = this._providerContexts.get(id);
+		if (!ctx) {
+			ctx = {
+				id,
+				plugin: this,
+				getPref: name => Zotero.Prefs.get(AgentParserProviders.prefName(id, name), true),
+				setPref: (name, value) => Zotero.Prefs.set(AgentParserProviders.prefName(id, name), value, true)
+			};
+			this._providerContexts.set(id, ctx);
+		}
+		return ctx;
 	},
 	
 	
-	hasCloudToken() {
-		return !!(this.getPref('cloudV4.token') || '').trim();
+	/**
+	 * @param {String} id - Provider ID
+	 * @param {Object} [variant] - Provider-specific alternative way of parsing (see getFallback())
+	 */
+	createBackend(id, variant = null) {
+		let provider = AgentParserProviders.get(id);
+		if (!provider) {
+			throw new Error(`Unknown parsing service '${id}'`);
+		}
+		return provider.create(this.getProviderContext(id), variant);
+	},
+	
+	
+	/**
+	 * Settings from before providers existed: `mode` (cloud/local) and `bulkUseCloud`
+	 */
+	_migrateRoutingPrefs() {
+		let legacy = name => this.PREF_PREFIX + name;
+		try {
+			if (Services.prefs.prefHasUserValue(legacy('mode'))) {
+				let id = AgentParserProviders.resolveID(this.getPref('mode'));
+				if (id && !Services.prefs.prefHasUserValue(legacy('defaultProvider'))) {
+					this.setPref('defaultProvider', id);
+				}
+				Services.prefs.clearUserPref(legacy('mode'));
+			}
+			if (Services.prefs.prefHasUserValue(legacy('bulkUseCloud'))) {
+				if (!this.getPref('bulkUseCloud') && !Services.prefs.prefHasUserValue(legacy('bulkProvider'))) {
+					this.setPref('bulkProvider', '');
+				}
+				Services.prefs.clearUserPref(legacy('bulkUseCloud'));
+			}
+		}
+		catch (e) {
+			Zotero.logError(e);
+		}
+	},
+	
+	
+	/**
+	 * The service new files go to
+	 */
+	getDefaultProvider() {
+		let id = this.getPref('defaultProvider');
+		if (AgentParserProviders.get(id)) {
+			return id;
+		}
+		return AgentParserProviders.list()[0]?.id || null;
+	},
+	
+	
+	/**
+	 * The service for large requests (the whole library, many selected items), if not the default
+	 */
+	getBulkProvider() {
+		let id = this.getPref('bulkProvider');
+		let provider = AgentParserProviders.get(id);
+		return provider && provider.maxBatch ? id : null;
 	},
 	
 	
@@ -149,21 +233,28 @@ AgentParser = {
 	 * Pick the service for a queue entry
 	 *
 	 * Local parsing takes about a minute per paper on Apple Silicon, so large requests (e.g., the
-	 * whole library) go to the cloud batch API when a token is configured, unless the user chose
-	 * a service explicitly.
+	 * whole library) can go to a service with a batch API instead, once it's set up, unless the
+	 * user chose a service explicitly.
 	 */
-	getBackendFor(entry) {
-		if (entry.backend && AgentParserBackends.classFor(entry.backend)) {
-			return entry.backend;
+	getProviderFor(entry) {
+		if (entry.provider && AgentParserProviders.get(entry.provider)) {
+			return entry.provider;
 		}
-		let name = this.getDefaultBackend();
-		if (name == 'local' && entry.bulk && this.getPref('bulkUseCloud') && this.hasCloudToken()) {
-			return 'cloudV4';
+		let id = this.getDefaultProvider();
+		let bulk = this.getBulkProvider();
+		if (entry.bulk && bulk && bulk != id && this.isProviderReady(bulk)) {
+			return bulk;
 		}
-		return name;
+		return id;
 	},
-
-
+	
+	
+	getProviderName(id) {
+		let provider = AgentParserProviders.get(id);
+		return provider ? this.getString(provider.l10n.name) : Promise.resolve(id || '');
+	},
+	
+	
 	async getString(id, args) {
 		try {
 			let l10n = this._l10n || Zotero.getMainWindow().document.l10n;
@@ -266,9 +357,9 @@ AgentParser = {
 	 * @param {Boolean} [options.waitForFile] - Wait for the file to finish downloading
 	 * @param {Boolean} [options.bulk] - Part of a large request (e.g., the whole library), which
 	 *     backends that support it process in batches
-	 * @param {String} [options.backend] - 'cloudV4' or 'local' instead of the default service
+	 * @param {String} [options.provider] - Service to use instead of the default
 	 */
-	enqueue(attachment, { force = false, waitForFile = false, bulk = false, backend = null } = {}) {
+	enqueue(attachment, { force = false, waitForFile = false, bulk = false, provider = null } = {}) {
 		let key = attachment.libraryKey;
 		if (this._running.has(key)) {
 			return false;
@@ -279,11 +370,11 @@ AgentParser = {
 		let existing = this._queue.find(x => x.key == key);
 		if (existing) {
 			existing.force = existing.force || force;
-			existing.backend = backend || existing.backend;
+			existing.provider = provider || existing.provider;
 			this._persistQueue();
 			return false;
 		}
-		this._queue.push({ key, force, waitForFile, bulk, backend });
+		this._queue.push({ key, force, waitForFile, bulk, provider });
 		this._persistQueue();
 		this._schedulePump();
 		return true;
@@ -305,9 +396,9 @@ AgentParser = {
 					force: !!entry.force,
 					waitForFile: false,
 					bulk: !!entry.bulk,
-					backend: AgentParserBackends.classFor(entry.backend) ? entry.backend : null,
-					model: entry.model || null,
-					ocr: typeof entry.ocr == 'boolean' ? entry.ocr : null,
+					// `backend` before providers existed
+					provider: AgentParserProviders.resolveID(entry.provider || entry.backend),
+					variant: this._loadVariant(entry),
 					fallbackReason: entry.fallbackReason || null,
 					remote: entry.remote && typeof entry.remote == 'object' ? entry.remote : null
 				});
@@ -316,19 +407,24 @@ AgentParser = {
 	},
 	
 	
+	_loadVariant(entry) {
+		if (entry.variant && typeof entry.variant == 'object') {
+			return entry.variant;
+		}
+		// Fallback model and OCR setting for MinerU cloud, from before providers existed
+		if (entry.model || typeof entry.ocr == 'boolean') {
+			return { model: entry.model || null, ocr: typeof entry.ocr == 'boolean' ? entry.ocr : null };
+		}
+		return null;
+	},
+	
+	
 	/**
 	 * Start processing the queue once Zotero is initialized
 	 */
 	async restoreQueue() {
-		// Find out whether local MinerU is installed before starting jobs that need it
-		if (this.local) {
-			try {
-				await this.local.getStatus();
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
-		}
+		// Find out whether services are set up (e.g., local MinerU installed) before starting jobs
+		await Promise.all(AgentParserProviders.list().map(provider => this._refreshProviderSetup(provider.id)));
 		this._started = true;
 		if (this._queue.length) {
 			Zotero.debug(`Agent Parser: Resuming ${this._queue.length} queued job(s)`);
@@ -460,7 +556,7 @@ AgentParser = {
 		let count = 0;
 		for (let { key, kind, service } of this.getFailures()) {
 			// Files outside a service's limits fail the same way again, unless they'd go elsewhere now
-			if (kind == 'limit' && service == this.getBackendFor({})) {
+			if (kind == 'limit' && AgentParserProviders.resolveID(service) == this.getProviderFor({})) {
 				continue;
 			}
 			let { libraryID, key: itemKey } = Zotero.Items.parseLibraryKey(key);
@@ -510,60 +606,89 @@ AgentParser = {
 	
 	
 	/**
+	 * What a service needs before files can be sent to it, if anything
+	 *
+	 * @return {Object|null} - { provider, id, installing }, where id is the l10n ID of the issue
+	 */
+	getProviderSetupIssue(id) {
+		let provider = AgentParserProviders.get(id);
+		if (!provider) {
+			return { provider: id, id: 'agentparser-setup-unavailable' };
+		}
+		let issue = null;
+		try {
+			issue = provider.getSetupIssue?.(this.getProviderContext(id)) || null;
+		}
+		catch (e) {
+			Zotero.logError(e);
+		}
+		return issue && { provider: id, id: issue.l10nID, installing: !!issue.installing };
+	},
+	
+	
+	/**
 	 * Whether a service is configured well enough to accept jobs
 	 *
 	 * Jobs for a service that isn't stay in the queue until it is, instead of failing.
 	 */
-	isBackendReady(name) {
-		if (name == 'cloudV4') {
-			return this.hasCloudToken();
-		}
-		if (name == 'local') {
-			return !!this.local && this.local.isReady() !== false;
-		}
-		return true;
+	isProviderReady(id) {
+		return !this.getProviderSetupIssue(id);
 	},
 	
 	
 	/**
 	 * What the user needs to do before files can be parsed, if anything
 	 *
-	 * @return {Object|null} - { id, backend }, where id is the l10n ID of the issue
+	 * @return {Object|null} - See getProviderSetupIssue()
 	 */
 	getSetupIssue() {
-		let backends = new Set([this.getDefaultBackend()]);
+		let ids = new Set([this.getDefaultProvider()]);
 		// Files queued for another service (e.g., "Reparse with Local MinerU") wait for it too
 		for (let entry of this._queue) {
-			backends.add(this.getBackendFor(entry));
+			ids.add(this.getProviderFor(entry));
 		}
-		for (let backend of backends) {
-			if (this.isBackendReady(backend)) {
-				continue;
+		for (let id of ids) {
+			let issue = this.getProviderSetupIssue(id);
+			if (issue) {
+				return issue;
 			}
-			if (backend == 'cloudV4') {
-				return { backend, id: 'agentparser-setup-token' };
-			}
-			return {
-				backend,
-				id: this.local?._task ? 'agentparser-setup-local-installing' : 'agentparser-setup-local'
-			};
 		}
 		return null;
 	},
 	
 	
-	/**
-	 * Recheck whether local MinerU is installed, and start jobs that were waiting for it
-	 */
-	async refreshSetup() {
-		if (this.local) {
-			try {
-				await this.local.getStatus({ refresh: true });
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
+	async _refreshProviderSetup(id) {
+		let provider = AgentParserProviders.get(id);
+		try {
+			await provider?.refreshSetup?.(this.getProviderContext(id));
 		}
+		catch (e) {
+			Zotero.logError(e);
+		}
+	},
+	
+	
+	/**
+	 * Recheck a service's setup after its prefs changed
+	 */
+	_scheduleRefreshSetup(id) {
+		clearTimeout(this._setupTimers.get(id));
+		this._setupTimers.set(id, setTimeout(() => {
+			this._setupTimers.delete(id);
+			this.refreshSetup(id);
+		}, 500));
+	},
+	
+	
+	/**
+	 * Recheck whether services are set up (e.g., local MinerU installed), and start jobs that
+	 * were waiting for them
+	 *
+	 * @param {String} [id] - Only this provider
+	 */
+	async refreshSetup(id = null) {
+		let ids = id ? [id] : AgentParserProviders.list().map(x => x.id);
+		await Promise.all(ids.map(x => this._refreshProviderSetup(x)));
 		this._changed();
 		this._schedulePump();
 	},
@@ -577,7 +702,7 @@ AgentParser = {
 		let now = Date.now();
 		let setupIssue = this.getSetupIssue();
 		let blocked = setupIssue
-			? this._queue.filter(x => !this.isBackendReady(this.getBackendFor(x))).length
+			? this._queue.filter(x => !this.isProviderReady(this.getProviderFor(x))).length
 			: 0;
 		let failed = Object.keys(this._failures).length;
 		let state;
@@ -616,21 +741,27 @@ AgentParser = {
 	/**
 	 * What each service is doing, for the toolbar status panel
 	 *
-	 * @return {Object} - { cloudV4: { running, queued, deferred, blocked }, local: { ... } }, where
-	 *     running is a list of { key, title, status, inBatch }
+	 * @return {Object} - { <provider ID>: { running, queued, deferred, blocked } }, where running
+	 *     is a list of { key, title, status, progress, inBatch }
 	 */
 	getServiceDetails() {
 		let now = Date.now();
 		let details = {};
 		let get = name => details[name] || (details[name] = { running: [], queued: 0, deferred: 0, blocked: 0 });
 		for (let job of this._running.values()) {
-			get(job.service).running.push({ key: job.key, title: job.title, status: job.status, inBatch: !!job.inBatch });
+			get(job.service).running.push({
+				key: job.key,
+				title: job.title,
+				status: job.status,
+				progress: job.progress || null,
+				inBatch: !!job.inBatch
+			});
 		}
 		for (let entry of this._queue) {
-			let name = this.getBackendFor(entry);
+			let name = this.getProviderFor(entry);
 			let service = get(name);
 			service.queued++;
-			if (!this.isBackendReady(name)) {
+			if (!this.isProviderReady(name)) {
 				service.blocked++;
 			}
 			else if (entry.notBefore > now) {
@@ -652,12 +783,12 @@ AgentParser = {
 		let key = attachment.libraryKey;
 		let job = this._running.get(key);
 		if (job) {
-			return { state: 'running', status: job.status, service: job.service };
+			return { state: 'running', status: job.status, progress: job.progress || null, service: job.service };
 		}
 		let entry = this._queue.find(x => x.key == key);
 		if (entry) {
-			let service = this.getBackendFor(entry);
-			if (!this.isBackendReady(service)) {
+			let service = this.getProviderFor(entry);
+			if (!this.isProviderReady(service)) {
 				return { state: 'setup', service };
 			}
 			return {
@@ -673,7 +804,8 @@ AgentParser = {
 				state: 'failed',
 				kind: failure.kind || 'error',
 				message: failure.message,
-				service: failure.service,
+				// Failures from before providers existed name the old backend
+				service: AgentParserProviders.resolveID(failure.service) || failure.service,
 				time: failure.time
 			};
 		}
@@ -782,9 +914,8 @@ AgentParser = {
 				key: x.key,
 				force: x.force,
 				bulk: x.bulk,
-				backend: x.backend || null,
-				model: x.model || null,
-				ocr: typeof x.ocr == 'boolean' ? x.ocr : null,
+				provider: x.provider || null,
+				variant: x.variant || null,
 				fallbackReason: x.fallbackReason || null,
 				// What the service already has, so that it isn't submitted again after a restart
 				remote: x.remote || null
@@ -794,8 +925,8 @@ AgentParser = {
 	},
 	
 	
-	_supportsBatch(name) {
-		return typeof AgentParserBackends.classFor(name)?.prototype.parseBatch == 'function';
+	_supportsBatch(id) {
+		return !!AgentParserProviders.get(id)?.maxBatch;
 	},
 	
 	
@@ -823,23 +954,24 @@ AgentParser = {
 		// A follow-up job (e.g., a fallback parse) waits for the current one on the same file
 		let ready = x => (!x.notBefore || x.notBefore <= now) && !this._running.has(x.key)
 			// Jobs for a service that isn't set up yet wait for it instead of failing
-			&& this.isBackendReady(this.getBackendFor(x));
-		let batched = x => x.bulk && this._supportsBatch(this.getBackendFor(x));
+			&& this.isProviderReady(this.getProviderFor(x));
+		let batched = x => x.bulk && this._supportsBatch(this.getProviderFor(x));
 		this._scheduleRetry();
 		
 		// Batches run alongside regular jobs, so that newly added items don't wait for a whole
 		// library to finish
 		while (this._batchesRunning < this.MAX_BATCHES && this._queue.some(x => ready(x) && batched(x))) {
-			let backend = this.getBackendFor(this._queue.find(x => ready(x) && batched(x)));
+			let backend = this.getProviderFor(this._queue.find(x => ready(x) && batched(x)));
+			let maxBatch = AgentParserProviders.get(backend).maxBatch;
 			let entries = [];
 			this._queue = this._queue.filter((x) => {
-				if (ready(x) && batched(x) && this.getBackendFor(x) == backend && entries.length < this.BATCH_SIZE) {
+				if (ready(x) && batched(x) && this.getProviderFor(x) == backend && entries.length < maxBatch) {
 					entries.push(x);
 					return false;
 				}
 				return true;
 			});
-			let jobs = entries.map(x => ({ ...x, service: backend, status: 'starting', inBatch: true }));
+			let jobs = entries.map(x => ({ ...x, service: backend, status: 'preparing', inBatch: true }));
 			for (let job of jobs) {
 				this._running.set(job.key, job);
 			}
@@ -857,20 +989,22 @@ AgentParser = {
 				});
 		}
 		
-		// The local server handles one task at a time
-		let capacity = name => (name == 'local' ? 1 : Math.max(1, this._getIntPref('concurrency', 1)));
+		let capacity = (id) => {
+			let provider = AgentParserProviders.get(id);
+			return Math.max(1, provider?.getConcurrency?.(this.getProviderContext(id)) || 1);
+		};
 		let running = name => [...this._running.values()].filter(x => !x.inBatch && x.service == name).length;
 		while (true) {
 			let index = this._queue.findIndex((x) => {
-				let name = this.getBackendFor(x);
+				let name = this.getProviderFor(x);
 				return ready(x) && !batched(x) && running(name) < capacity(name);
 			});
 			if (index == -1) {
 				break;
 			}
 			let [entry] = this._queue.splice(index, 1);
-			// `backend` is an explicit choice that's persisted, `service` is what the job actually uses
-			let job = { ...entry, service: this.getBackendFor(entry), status: 'starting' };
+			// `provider` is an explicit choice that's persisted, `service` is what the job actually uses
+			let job = { ...entry, service: this.getProviderFor(entry), status: 'preparing' };
 			this._running.set(entry.key, job);
 			this._persistQueue();
 			this._process(job)
@@ -879,10 +1013,10 @@ AgentParser = {
 						return;
 					}
 					Zotero.logError(`Agent Parser: Failed to parse ${job.key} (${job.title}): ${e.message || e}`);
-					if (AgentParserBackends.isLimitExceeded(e) && this._rerouteToLocal(job, e.message)) {
+					let kind = this._classifyError(job.service, e) == 'limit' ? 'limit' : 'error';
+					if (kind == 'limit' && this._rerouteToDefault(job, e.message)) {
 						return;
 					}
-					let kind = AgentParserBackends.isLimitExceeded(e) ? 'limit' : 'error';
 					this._recordFailure(job, e.message || String(e), { kind });
 					await this._notify('failure', job, e.message || String(e), kind);
 				})
@@ -923,15 +1057,42 @@ AgentParser = {
 				force: job.force,
 				waitForFile: false,
 				bulk: job.bulk,
-				backend: job.backend,
-				model: job.model,
-				ocr: job.ocr,
+				provider: job.provider,
+				variant: job.variant,
 				fallbackReason: job.fallbackReason,
 				notBefore: Date.now() + this.BUSY_RETRY_MINUTES * 60 * 1000
 			});
 		}
 		this._persistQueue();
 		this._scheduleRetry();
+	},
+	
+	
+	/**
+	 * @return {String} - 'busy', 'limit', or 'error' (see AgentParserProviders)
+	 */
+	_classifyError(id, e) {
+		// Jobs can end after shutdown, once the providers are gone
+		if (this._shuttingDown) {
+			return 'error';
+		}
+		try {
+			return AgentParserProviders.get(id)?.classifyError?.(e) || 'error';
+		}
+		catch (x) {
+			Zotero.logError(x);
+			return 'error';
+		}
+	},
+	
+	
+	/**
+	 * Progress from a provider
+	 */
+	_setStatus(job, phase, detail = null) {
+		job.status = phase;
+		job.progress = detail;
+		this._changed();
 	},
 	
 	
@@ -948,17 +1109,15 @@ AgentParser = {
 			return;
 		}
 		try {
-			let backendName = job.service;
-			Zotero.debug(`Agent Parser: Parsing ${job.key} (${ctx.filePath}) with ${backendName}`);
-			let parser = await this.createBackend(backendName, { model: job.model, ocr: job.ocr }).parse({
+			Zotero.debug(`Agent Parser: Parsing ${job.key} (${ctx.filePath}) with ${job.service}`);
+			let parser = await this.createBackend(job.service, job.variant).parse({
 				...ctx.backendJob,
 				pollInterval: this._getPollInterval(),
 				timeout: this._getTimeout(),
 				queueTimeout: this._getQueueTimeout(),
-				onStatus: (status) => {
-					job.status = status;
-					Zotero.debug(`Agent Parser: ${job.key}: ${status}`);
-					this._changed();
+				onStatus: (phase, detail) => {
+					Zotero.debug(`Agent Parser: ${job.key}: ${phase}${detail ? ' ' + detail : ''}`);
+					this._setStatus(job, phase, detail);
 				},
 				checkCancelled: () => this._checkCancelled()
 			});
@@ -968,7 +1127,7 @@ AgentParser = {
 			}
 		}
 		catch (e) {
-			if (!AgentParserBackends.isServerBusy(e)) {
+			if (this._classifyError(job.service, e) != 'busy') {
 				throw e;
 			}
 			this._defer(job, e);
@@ -1022,9 +1181,8 @@ AgentParser = {
 					timeout: this._getTimeout(),
 					queueTimeout: this._getQueueTimeout(),
 					checkCancelled: () => this._checkCancelled(),
-					onStatus: (backendJob, status) => {
-						backendJob.ctx.job.status = status;
-						this._changed();
+					onStatus: (backendJob, phase, detail) => {
+						this._setStatus(backendJob.ctx.job, phase, detail);
 					},
 					onDone: async (backendJob, parser) => {
 						let ctx = backendJob.ctx;
@@ -1049,14 +1207,13 @@ AgentParser = {
 						let ctx = backendJob.ctx;
 						remaining.delete(ctx);
 						Zotero.logError(`Agent Parser: Failed to parse ${ctx.job.key} (${ctx.job.title}): ${e.message || e}`);
-						if (AgentParserBackends.isLimitExceeded(e) && this._rerouteToLocal(ctx.job, e.message)) {
+						let kind = this._classifyError(ctx.job.service, e) == 'limit' ? 'limit' : 'error';
+						if (kind == 'limit' && this._rerouteToDefault(ctx.job, e.message)) {
 							await this._cleanup(ctx);
 							finishJob(ctx.job);
 							return;
 						}
-						this._recordFailure(ctx.job, e.message || String(e), {
-							kind: AgentParserBackends.isLimitExceeded(e) ? 'limit' : 'error'
-						});
+						this._recordFailure(ctx.job, e.message || String(e), { kind });
 						stats.failed++;
 						await this._cleanup(ctx);
 						finishJob(ctx.job);
@@ -1128,7 +1285,7 @@ AgentParser = {
 		let limit = await this._checkLimits(job, attachment, filePath);
 		if (limit) {
 			Zotero.debug(`Agent Parser: ${job.key} is outside the limits of ${job.service} (${limit.reason})`);
-			if (!this._rerouteToLocal(job, limit.reason)) {
+			if (!this._rerouteToDefault(job, limit.reason)) {
 				this._recordFailure(job, limit.message, { kind: 'limit' });
 				if (!job.inBatch) {
 					await this._notify('failure', job, limit.message, 'limit');
@@ -1138,7 +1295,7 @@ AgentParser = {
 		}
 		
 		let outputDir = AgentParserOutput.getOutputDir(attachment, filePath, this.getPref('outputDirName'));
-		job.status = 'hashing';
+		job.status = 'preparing';
 		let sha256 = await AgentParserOutput.sha256(filePath);
 		if (!job.force && (await AgentParserOutput.readSourceHash(outputDir)) == sha256) {
 			Zotero.debug(`Agent Parser: ${job.key} is already parsed -- skipping`);
@@ -1170,13 +1327,16 @@ AgentParser = {
 			sha256,
 			stagingDir,
 			tempDir,
-			resume: job.remote || null,
+			// A submission belongs to the service it was made to. Ones from before providers existed
+			// were made to MinerU cloud.
+			resume: job.remote && AgentParserProviders.resolveID(job.remote.provider || 'cloudV4') == job.service
+				? job.remote
+				: null,
 			onSubmitted: (remote) => {
-				job.remote = remote;
+				job.remote = { ...remote, provider: job.service };
 				this._persistQueue();
 			}
 		};
-		job.status = 'queued';
 		return ctx;
 	},
 	
@@ -1188,8 +1348,8 @@ AgentParser = {
 	 * @return {Promise<Object|null>} - { reason, message } if the file is outside the limits
 	 */
 	async _checkLimits(job, attachment, filePath) {
-		let backendClass = AgentParserBackends.classFor(job.service);
-		let maxSize = backendClass?.MAX_FILE_SIZE;
+		let limits = AgentParserProviders.get(job.service)?.limits || {};
+		let maxSize = limits.maxFileSize;
 		if (maxSize) {
 			let size = (await IOUtils.stat(filePath)).size;
 			if (size > maxSize) {
@@ -1200,9 +1360,8 @@ AgentParser = {
 				};
 			}
 		}
-		let maxPages = backendClass?.MAX_PAGES;
+		let maxPages = limits.maxPages;
 		if (maxPages) {
-			job.status = 'counting pages';
 			let pages = await this._getPageCount(attachment);
 			if (pages > maxPages) {
 				return {
@@ -1216,24 +1375,25 @@ AgentParser = {
 	
 	
 	/**
-	 * In local mode, large requests go to the cloud batch API (see getBackendFor()). A file that
-	 * the cloud doesn't accept is parsed locally instead, as it would have been without that.
+	 * Large requests can go to a different service than the default (see getProviderFor()). A
+	 * file that service doesn't accept goes to the default service instead, as it would have
+	 * without that.
 	 *
-	 * @return {Boolean} - Whether the file was queued for local parsing
+	 * @return {Boolean} - Whether the file was queued for the default service
 	 */
-	_rerouteToLocal(job, reason) {
-		if (job.backend || job.service == 'local' || this.getDefaultBackend() != 'local'
-				|| !this.isBackendReady('local')) {
+	_rerouteToDefault(job, reason) {
+		let defaultID = this.getDefaultProvider();
+		if (job.provider || job.service == defaultID || !this.isProviderReady(defaultID)) {
 			return false;
 		}
-		Zotero.debug(`Agent Parser: Parsing ${job.key} locally instead (${reason})`);
+		Zotero.debug(`Agent Parser: Parsing ${job.key} with ${defaultID} instead (${reason})`);
 		this._queue = this._queue.filter(x => x.key != job.key);
 		this._queue.push({
 			key: job.key,
 			force: job.force,
 			waitForFile: false,
 			bulk: false,
-			backend: 'local'
+			provider: defaultID
 		});
 		this._persistQueue();
 		this._schedulePump();
@@ -1272,16 +1432,25 @@ AgentParser = {
 		if (job.fallbackReason) {
 			parser = { ...parser, fallbackReason: job.fallbackReason };
 		}
+		let provider = AgentParserProviders.get(job.service);
+		let parserFields = {};
+		try {
+			parserFields = provider?.frontMatter?.(parser) || {};
+		}
+		catch (e) {
+			Zotero.logError(e);
+		}
 		let { repetition } = await AgentParserOutput.finalize(stagingDir, {
 			item: attachment.parentItem,
 			attachment,
 			filePath,
 			sha256,
-			parser
+			parser,
+			parserFields
 		});
 		let fallback = null;
 		if (repetition) {
-			let mode = (parser.modelVersion || 'default') + (parser.isOCR ? '+ocr' : '');
+			let mode = provider?.describe?.(parser) || job.service;
 			Zotero.debug(`Agent Parser: ${job.key} output repeats ${JSON.stringify(repetition.unit.substr(0, 40))} `
 				+ `over ${repetition.length} characters (${parser.service}, ${mode})`);
 			fallback = this._getFallback(job, parser);
@@ -1321,25 +1490,20 @@ AgentParser = {
 	
 	
 	/**
-	 * Choose how to parse a file again after its output repeated itself
+	 * Ask the provider for another way to parse a file whose output repeated itself, since
+	 * parsing it again the same way produces the same output
 	 *
-	 * Parsing again the same way doesn't help, since the service produces the same output for
-	 * the same file. Without OCR, the cloud "vlm" model (actually MinerU's hybrid backend) takes
-	 * text from the PDF's text layer and reads inline formulas with a small formula model, which
-	 * is where most loops come from -- and the pipeline model uses that same formula model. With
-	 * OCR, the VLM reads whole lines, formulas included. If that still loops, the pipeline model's
-	 * separate layout, OCR, and table models are the last resort.
-	 *
-	 * @return {Object|null} - { model, ocr }, or null if there's nothing left to try
+	 * @return {Object|null} - { variant, description }, or null if there's nothing left to try
 	 */
 	_getFallback(job, parser) {
-		if (job.service != 'cloudV4' || parser.modelVersion != 'vlm') {
+		let provider = AgentParserProviders.get(job.service);
+		try {
+			return provider?.getFallback?.(parser, job.variant) || null;
+		}
+		catch (e) {
+			Zotero.logError(e);
 			return null;
 		}
-		if (!parser.isOCR) {
-			return { model: 'vlm', ocr: true };
-		}
-		return { model: 'pipeline', ocr: null };
 	},
 	
 	
@@ -1348,18 +1512,16 @@ AgentParser = {
 	 *
 	 * The existing results stay in place until a fallback without repetition replaces them.
 	 */
-	_enqueueFallback(job, { model, ocr, reason }) {
-		Zotero.debug(`Agent Parser: Parsing ${job.key} again with the ${model} model`
-			+ `${ocr ? ' and OCR' : ''} (${reason})`);
+	_enqueueFallback(job, { variant, description, reason }) {
+		Zotero.debug(`Agent Parser: Parsing ${job.key} again with ${description} (${reason})`);
 		this._queue = this._queue.filter(x => x.key != job.key);
 		this._queue.push({
 			key: job.key,
 			force: true,
 			waitForFile: false,
 			bulk: false,
-			backend: 'cloudV4',
-			model,
-			ocr,
+			provider: job.service,
+			variant,
 			fallbackReason: reason
 		});
 		this._persistQueue();
@@ -1454,7 +1616,9 @@ AgentParser = {
 			pw.addDescription(message);
 			let hint = 'agentparser-notify-failure-hint';
 			if (kind == 'limit') {
-				hint = this.local ? 'agentparser-notify-limit-hint' : 'agentparser-notify-limit-hint-lite';
+				hint = AgentParserProviders.list().length > 1
+					? 'agentparser-notify-limit-hint'
+					: 'agentparser-notify-limit-hint-single';
 			}
 			pw.addDescription(await this.getString(hint));
 		}
@@ -1481,14 +1645,14 @@ AgentParser = {
 	/**
 	 * @param {Window} win
 	 * @param {Boolean} force
-	 * @param {String} [backend] - Service to use instead of the default
+	 * @param {String} [provider] - Service to use instead of the default
 	 */
-	async parseSelected(win, force, backend = null) {
+	async parseSelected(win, force, provider = null) {
 		let attachments = this.getParsableAttachments(win.ZoteroPane.getSelectedItems());
 		let bulk = attachments.length > 1;
 		let count = 0;
 		for (let attachment of attachments) {
-			if (this.enqueue(attachment, { force, bulk, backend })) {
+			if (this.enqueue(attachment, { force, bulk, provider })) {
 				count++;
 			}
 		}
@@ -1555,9 +1719,9 @@ AgentParser = {
 			win.alert(await this.getString('agentparser-alert-library-done'));
 			return;
 		}
-		let service = this.getBackendFor({ bulk: true });
+		let provider = AgentParserProviders.get(this.getProviderFor({ bulk: true }));
 		let ok = win.confirm(await this.getString(
-			service == 'local' ? 'agentparser-confirm-library-local' : 'agentparser-confirm-library',
+			provider?.l10n.confirmBulk || 'agentparser-confirm-library',
 			{ count: missing.length }
 		));
 		if (!ok) {
@@ -1590,7 +1754,9 @@ AgentParser = {
 		if (this._windowElements.has(win)) {
 			return;
 		}
-		win.MozXULElement.insertFTLIfNeeded(this.FTL);
+		for (let ftl of this.getFTLFiles()) {
+			win.MozXULElement.insertFTLIfNeeded(ftl);
+		}
 		let elements = [];
 
 		let makeItem = (l10nID, oncommand) => {
@@ -1608,11 +1774,16 @@ AgentParser = {
 			let reparse = makeItem('agentparser-menu-reparse', () => this.parseSelected(win, true));
 			let reveal = makeItem('agentparser-menu-reveal', () => this.revealSelected(win));
 			let added = [sep, parse, reparse];
-			if (this.local) {
-				added.push(
-					makeItem('agentparser-menu-parse-cloud', () => this.parseSelected(win, true, 'cloudV4')),
-					makeItem('agentparser-menu-parse-local', () => this.parseSelected(win, true, 'local'))
-				);
+			// With more than one service, offer each of them
+			let providers = AgentParserProviders.list();
+			if (providers.length > 1) {
+				for (let provider of providers) {
+					let menuitem = makeItem('agentparser-menu-parse-with', () => this.parseSelected(win, true, provider.id));
+					this.getString(provider.l10n.name)
+						.then(name => doc.l10n.setAttributes(menuitem, 'agentparser-menu-parse-with', { provider: name }))
+						.catch(() => {});
+					added.push(menuitem);
+				}
 			}
 			added.push(reveal);
 			itemMenu.append(...added);
@@ -1663,6 +1834,8 @@ AgentParser = {
 			elem.remove();
 		}
 		this._windowElements.delete(win);
-		win.document.querySelector(`[href="${this.FTL}"]`)?.remove();
+		for (let ftl of this.getFTLFiles()) {
+			win.document.querySelector(`[href="${ftl}"]`)?.remove();
+		}
 	}
 };

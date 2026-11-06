@@ -3,7 +3,7 @@
 #
 #   ./build.sh          both editions
 #   ./build.sh full     cloud + local MinerU
-#   ./build.sh lite     cloud only, without the local MinerU installer and server manager
+#   ./build.sh lite     cloud only: without the local MinerU provider (installer and server manager)
 #
 # Both editions use the same add-on ID and prefs, so installing one replaces the other and keeps
 # the settings. They have separate update manifests so that each one stays on its own edition.
@@ -25,15 +25,18 @@ build_lite() {
 	stage=$(mktemp -d)
 	trap 'rm -rf "$stage"' EXIT
 	cp -R $FILES "$stage/"
-	rm "$stage/content/local.js"
-	sed -i.bak "s/'full'/'lite'/" "$stage/content/edition.js"
+	# Leave out local MinerU: its provider, and its strings
+	rm -r "$stage/content/providers/mineru-local"
+	rm "$stage"/locale/*/agent-parser-mineru-local.ftl
+	sed -i.bak "/dir: 'mineru-local'/d" "$stage/content/providers/index.js"
 	sed -i.bak \
 		-e 's/"name": "Agent Parser"/"name": "Agent Parser Lite"/' \
 		-e 's/(cloud or local)/(cloud API)/' \
 		-e 's#/updates.json"#/updates-lite.json"#' \
 		"$stage/manifest.json"
 	find "$stage" -name '*.bak' -delete
-	grep -q "'lite'" "$stage/content/edition.js"
+	! grep -q "mineru-local" "$stage/content/providers/index.js"
+	grep -q "mineru-cloud" "$stage/content/providers/index.js"
 	grep -q '"Agent Parser Lite"' "$stage/manifest.json"
 	rm -f "$out"
 	(cd "$stage" && zip -qr - $FILES) > "$out"

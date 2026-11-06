@@ -1,0 +1,46 @@
+<!-- Settings for the mineru-cloud provider, inserted into the Agent Parser settings by preferences.js -->
+	<description data-l10n-id="agentparser-pref-cloud-desc"/>
+	<html:span id="agentparser-mineru-cloud-warning" style="color: var(--accent-red, #d70022)" hidden="hidden"/>
+	<grid class="form-grid">
+		<html:label for="agentparser-cloudv4-token" data-l10n-id="agentparser-pref-token"/>
+		<html:input id="agentparser-cloudv4-token" type="password" style="flex: 1" data-setup-focus="true"
+			preference="extensions.agentparser.providers.mineru-cloud.token"
+			/>
+		<html:label for="agentparser-cloudv4-model" data-l10n-id="agentparser-pref-model-version"/>
+		<menulist id="agentparser-cloudv4-model" preference="extensions.agentparser.providers.mineru-cloud.modelVersion" native="true">
+			<menupopup>
+				<menuitem value="vlm" label="vlm"/>
+				<menuitem value="pipeline" label="pipeline"/>
+			</menupopup>
+		</menulist>
+		<html:label for="agentparser-cloudv4-lang" data-l10n-id="agentparser-pref-language"/>
+		<html:input id="agentparser-cloudv4-lang" style="width: 8em"
+			preference="extensions.agentparser.providers.mineru-cloud.language"/>
+		<html:label for="agentparser-cloudv4-hosts" data-l10n-id="agentparser-pref-url-hosts"/>
+		<html:input id="agentparser-cloudv4-hosts" style="flex: 1"
+			preference="extensions.agentparser.providers.mineru-cloud.urlHosts"/>
+		<html:label for="agentparser-cloudv4-accelerate" data-l10n-id="agentparser-pref-upload-acceleration"/>
+		<menulist id="agentparser-cloudv4-accelerate" preference="extensions.agentparser.providers.mineru-cloud.uploadAcceleration" native="true">
+			<menupopup>
+				<menuitem value="auto" data-l10n-id="agentparser-upload-acceleration-auto"/>
+				<menuitem value="always" data-l10n-id="agentparser-upload-acceleration-always"/>
+				<menuitem value="off" data-l10n-id="agentparser-upload-acceleration-off"/>
+			</menupopup>
+		</menulist>
+		<html:label for="agentparser-concurrency" data-l10n-id="agentparser-pref-concurrency"/>
+		<html:input id="agentparser-concurrency" type="number" min="1" max="8" style="width: 5em"
+			preference="extensions.agentparser.providers.mineru-cloud.concurrency"/>
+		<html:label for="agentparser-cloudv4-url" data-l10n-id="agentparser-pref-url"/>
+		<html:input id="agentparser-cloudv4-url" style="flex: 1"
+			preference="extensions.agentparser.providers.mineru-cloud.url"/>
+	</grid>
+	<description data-l10n-id="agentparser-pref-url-hosts-desc"/>
+	<description data-l10n-id="agentparser-pref-upload-acceleration-desc"/>
+	<checkbox preference="extensions.agentparser.providers.mineru-cloud.isOCR" data-l10n-id="agentparser-pref-force-ocr" native="true"/>
+	<checkbox preference="extensions.agentparser.providers.mineru-cloud.enableFormula" data-l10n-id="agentparser-pref-formula" native="true"/>
+	<checkbox preference="extensions.agentparser.providers.mineru-cloud.enableTable" data-l10n-id="agentparser-pref-table" native="true"/>
+	<hbox align="center">
+		<button id="agentparser-mineru-cloud-test" data-l10n-id="agentparser-pref-test"
+			oncommand="AgentParserProviderSettings['mineru-cloud'].test()"/>
+		<label id="agentparser-mineru-cloud-test-result" flex="1" crop="end"/>
+	</hbox>

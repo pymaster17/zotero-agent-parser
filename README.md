@@ -148,6 +148,32 @@
 
 - 本地服务产出的 `markdown.md` 和云端的 `full.md` 会统一整理成 `full.md`；YAML 中的 `parser` 字段为 `mineru-local` 或 `mineru-cloud-v4`。
 - API Token 和 Key 以明文保存在 Zotero 配置目录的 `prefs.js` 中。
-- 云端 v4 API 对单个文件的限制是 200 MB / 200 页。超过 200 页的 PDF 在提交前会被直接跳过，不会解析；超过 200 MB 时任务会失败并弹出通知。需要解析长文档时，可以先拆分 PDF，或改用本地 MinerU。
+- 云端 v4 API 对单个文件的限制是 200 MB / 200 页。超出的 PDF 在提交前就会标为「超出服务限制」，不会上传。需要解析长文档时，可以先拆分 PDF，或改用本地 MinerU。
 - 上传给服务端的文件名统一为 `<附件键>.pdf`，以避开非 ASCII 文件名带来的问题；原文件名会记录在 `full.md` 开头的 YAML 中。
 - 自动更新：完整版读取仓库根目录的 `updates.json`，轻量版读取 `updates-lite.json`，两个版本各自更新，不会互相切换。
+
+## 代码结构：解析服务（provider）
+
+插件本体（队列、路由、产物整理、状态界面、设置页框架）不依赖任何具体的解析服务。每个服务是 `content/providers/<id>/` 下的一个模块，向 `AgentParserProviders` 注册一个描述对象，接口定义见 [content/providers.js](content/providers.js)。
+
+| 模块 | 内容 |
+|---|---|
+| `mineru-cloud` | mineru.net v4 API：URL 直传、上传加速、批处理、重启后续接、vlm → OCR → pipeline 的重复输出回退 |
+| `mineru-local` | 本地 MinerU：安装与服务管理（`runtime.js`）、Tasks API 客户端（`tasks.js`） |
+
+每个服务自己声明：
+- 默认设置（存放在 `extensions.agentparser.providers.<id>.*`）和旧设置名的迁移；
+- 文件大小、页数限制，并发数，是否支持批处理；
+- 设置是否完整（缺 Token、未安装等）；
+- 错误分类：`busy` 稍后重试，`limit` 超出限制，`error` 普通失败；
+- 输出重复时的回退方案，以及写入 `full.md` YAML 的字段；
+- 设置页中自己的一节（XHTML 片段和脚本）和语言文件 `locale/<语言>/agent-parser-<id>.ftl`。
+
+服务需要把结果整理成一个 Markdown 文件加 `images/` 目录，放在给定的目录中，并用统一的进度阶段（`preparing`、`uploading`、`pending`、`parsing`、`downloading`）报告进度。
+
+新增服务的步骤：
+1. 新建 `content/providers/<id>/`，在 `provider.js` 中注册描述对象。
+2. 在 [content/providers/index.js](content/providers/index.js) 中加入这个模块。
+3. 添加两种语言的 `agent-parser-<id>.ftl`。
+
+版本之间的差别只是打包哪些服务：轻量版就是去掉 `mineru-local` 的完整版。

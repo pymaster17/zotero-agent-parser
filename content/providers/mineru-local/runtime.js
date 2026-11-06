@@ -1,8 +1,12 @@
-/* global Zotero, Services, ChromeUtils, Components, AgentParserHTTP, AgentParserBackends */
+/* global Zotero, Services, ChromeUtils, Components, AgentParserHTTP */
 
 /**
- * Local MinerU support, left out of the lite (cloud-only) edition
- *
+ * Local MinerU, left out of the lite (cloud-only) edition
+ */
+var AgentParserMinerULocal = {};
+
+
+/**
  * Plugin-managed local MinerU: Python environment, model download and `mineru-kit api-server`
  *
  * The environment is a virtualenv created with uv (or `python3 -m venv` if uv isn't installed).
@@ -10,7 +14,7 @@
  * MinerU install. The server is started on demand, runs one task at a time (the MLX engine
  * serializes inference anyway), and is stopped after a period of inactivity to free memory.
  */
-var AgentParserLocal = {
+AgentParserMinerULocal.runtime = {
 	MINERU_SPEC: 'mineru>=4.1,<5',
 	MLX_SPEC: 'mineru-vl-utils[mlx]',
 	PYTHON_VERSION: '3.12',
@@ -51,7 +55,7 @@ var AgentParserLocal = {
 	// Configuration
 	//
 	isManaged() {
-		return !!this._getPref('local.managed');
+		return !!this._getPref('managed');
 	},
 
 
@@ -74,7 +78,7 @@ var AgentParserLocal = {
 
 
 	getTier() {
-		let tier = this._getPref('local.tier');
+		let tier = this._getPref('tier');
 		return ['basic', 'standard', 'advanced'].includes(tier) ? tier : 'standard';
 	},
 
@@ -88,7 +92,7 @@ var AgentParserLocal = {
 
 
 	getPort() {
-		let port = parseInt(this._getPref('local.port'));
+		let port = parseInt(this._getPref('port'));
 		return port > 0 && port < 65536 ? port : 8000;
 	},
 
@@ -97,7 +101,7 @@ var AgentParserLocal = {
 		if (this.isManaged()) {
 			return `http://127.0.0.1:${this.getPort()}`;
 		}
-		return (this._getPref('local.url') || '').trim().replace(/\/+$/, '');
+		return (this._getPref('url') || '').trim().replace(/\/+$/, '');
 	},
 
 
@@ -111,7 +115,7 @@ var AgentParserLocal = {
 	
 	
 	getEnvDir() {
-		let dir = (this._getPref('local.envDir') || '').trim();
+		let dir = (this._getPref('envDir') || '').trim();
 		return dir || PathUtils.join(this.getDataDir(), 'mineru-env');
 	},
 
@@ -316,7 +320,7 @@ var AgentParserLocal = {
 
 			task.step = 'models';
 			let args = ['models', 'download', '--tier', this.getModelTier(), ...this._engineArgs()];
-			let source = this._getPref('local.modelSource');
+			let source = this._getPref('modelSource');
 			if (source && source != 'auto') {
 				args.push('--source', source);
 			}
@@ -371,7 +375,7 @@ var AgentParserLocal = {
 
 
 	async _findUV() {
-		let configured = (this._getPref('local.uvPath') || '').trim();
+		let configured = (this._getPref('uvPath') || '').trim();
 		if (configured) {
 			return configured;
 		}
@@ -435,7 +439,7 @@ var AgentParserLocal = {
 
 	_scheduleIdleStop() {
 		clearTimeout(this._idleTimer);
-		let minutes = parseInt(this._getPref('local.idleStopMinutes'));
+		let minutes = parseInt(this._getPref('idleStopMinutes'));
 		if (!this._server || this._active || !(minutes > 0)) {
 			return;
 		}
@@ -507,7 +511,7 @@ var AgentParserLocal = {
 			}
 		}
 
-		onStatus?.('starting-server');
+		onStatus?.('preparing');
 		let options = {
 			'--host': '127.0.0.1',
 			'--port': this.getPort(),
@@ -665,44 +669,5 @@ var AgentParserLocal = {
 			this._log.splice(0, this._log.length - this.LOG_LINES);
 		}
 		Zotero.debug('Agent Parser [MinerU]: ' + line, 5);
-	}
-};
-
-
-/**
- * Local MinerU via the Tasks API
- *
- * By default the plugin manages the server itself (see local.js) and starts it on demand. It can
- * also point at a server the user runs, on this computer or elsewhere.
- */
-AgentParserBackends.Local = class extends AgentParserBackends.Tasks {
-	constructor(getPref) {
-		super({
-			url: AgentParserLocal.getBaseURL(),
-			apiKey: AgentParserLocal.isManaged() ? '' : getPref('local.apiKey'),
-			tier: AgentParserLocal.getTier(),
-			ocrMode: getPref('local.ocrMode'),
-		});
-		this.serviceName = 'mineru-local';
-	}
-	
-	async test() {
-		await AgentParserLocal.acquire();
-		try {
-			return await super.test();
-		}
-		finally {
-			AgentParserLocal.release();
-		}
-	}
-	
-	async parse(job) {
-		await AgentParserLocal.acquire(status => job.onStatus(status));
-		try {
-			return await super.parse(job);
-		}
-		finally {
-			AgentParserLocal.release();
-		}
 	}
 };
