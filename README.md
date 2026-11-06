@@ -1,6 +1,6 @@
 # Zotero Agent Parser
 
-一个 Zotero 插件（Zotero 7 及以上），在添加新条目时自动把 PDF 交给 MinerU 解析成 Markdown，，方便 agent 直接读取。解析产物放在 PDF 所在的附件目录里，通过 WebDAV 同步到其他电脑。
+一个 Zotero 插件（Zotero 7 及以上），在添加新条目时自动把 PDF 交给 MinerU 或 PaddleOCR 解析成 Markdown，方便 agent 直接读取。解析产物放在 PDF 所在的附件目录里，通过 WebDAV 同步到其他电脑。
 
 ## 版本与安装
 
@@ -8,8 +8,8 @@
 
 | 版本 | 文件 | 内容 |
 |---|---|---|
-| 轻量版 Agent Parser Lite | `agent-parser-lite-<版本>.xpi` | 只用云端（mineru.net），不含本地 MinerU 的安装和服务管理 |
-| 完整版 Agent Parser | `agent-parser-<版本>.xpi` | 云端 + 本地 MinerU |
+| 轻量版 Agent Parser Lite | `agent-parser-lite-<版本>.xpi` | 只用云端服务（MinerU 云端、PaddleOCR），不含本地 MinerU 的安装和服务管理 |
+| 完整版 Agent Parser | `agent-parser-<版本>.xpi` | 云端服务 + 本地 MinerU |
 
 两个版本的插件本体都只有几十 KB。完整版只有在设置页点「安装」后，才会下载 Python 环境和模型（约 4.8 GB）。两个版本共用同一个插件 ID 和设置，装其中一个会替换另一个，Token 等设置会保留。
 
@@ -30,14 +30,15 @@
 
 ## 解析方式
 
-在「设置 → Agent Parser」中选择默认解析方式（轻量版只有云端）：
+在「设置 → Agent Parser」中选择默认解析服务（轻量版没有本地 MinerU）：
 
 | 方式 | 说明 | 需要配置 |
 |---|---|---|
 | 云端（mineru.net v4 API） | 速度快，不占本机资源，消耗解析额度 | 在 mineru.net API 管理页申请的 Token |
+| PaddleOCR（百度飞桨星河社区 API） | 每个模型每天免费 20000 页；**仅建议中国大陆用户使用**，见下文 | 在 aistudio.baidu.com「访问令牌」页面获取的令牌 |
 | 本地（在本机运行 MinerU） | 不依赖网络和额度，速度取决于本机硬件 | 点「安装」构建环境并下载模型 |
 
-右键菜单里还有「用云端服务重新解析 PDF」和「用本地 MinerU 重新解析 PDF」，可以临时改用另一种方式。
+右键菜单里可以临时改用其他服务重新解析 PDF，例如「用 PaddleOCR（百度）重新解析」。
 
 **本地模式下的批量请求**：整库解析、多选条目这类批量请求，默认改走云端批处理，前提是填了 Token。原因是本地逐篇处理太慢：M4 上 standard 档一篇论文约 1 分钟。可以在设置中取消「大批量请求使用云端批处理接口」。
 
@@ -152,6 +153,16 @@
 - 上传给服务端的文件名统一为 `<附件键>.pdf`，以避开非 ASCII 文件名带来的问题；原文件名会记录在 `full.md` 开头的 YAML 中。
 - 自动更新：完整版读取仓库根目录的 `updates.json`，轻量版读取 `updates-lite.json`，两个版本各自更新，不会互相切换。
 
+### PaddleOCR（百度）
+
+使用飞桨星河社区的异步解析 API（默认模型 PaddleOCR-VL-1.5）。免费额度按[官方配额说明](https://ai.baidu.com/ai-doc/AISTUDIO/Xmjclapam)：每个用户、每个模型每天 20000 页，可以填问卷免费申请提高；上传文件不超过 50 MB，每个文件只解析前 1000 页。当天额度用完、提交队列已满或请求过于频繁时，文件会留在队列里稍后再试，不算失败。
+
+**仅建议中国大陆用户使用。** 服务器在北京，前面没有 CDN。从境外上传时每个连接通常只有 10–20 KB/s（从新加坡实测约 15 KB/s，同一网络到百度智能云 `aip.baidubce.com` 约 1 MB/s），一篇 3 MB 的论文要上传三四分钟，7 MB 以上的文件可能超时。几个文件同时上传时速度可以叠加，所以默认并发 3。
+
+**URL 直传默认关闭**（白名单为空）：URL 由百度服务器自己下载，而它通常只能访问中国大陆的网站。实测 arXiv、jsDelivr 等境外地址都会被拒绝（「文件格式不支持」），ACL Anthology 下载超时；国内 CDN 上的 PDF 则几秒内就能提交成功。只有当 PDF 来自中国大陆可以直接访问的站点时，才值得把它的域名加入白名单。
+
+解析质量（与 MinerU 云端 vlm 对比，4 篇共 302 页）：正文文字基本一致（英文论文 96–99%，中文报告 99.8%），表格和图片数量相同，公式略多，标题层级（`##`/`###`/`####`）比 MinerU 更分明；但会保留行末断词（如 "AUTO-MATED"），中文文档里偶有个别字符识别错误。插件会把结果整理成和 MinerU 一样的格式：去掉表格单元格上的内联样式，图片改为 `![](images/...)`，行内公式 `$ x $` 改为 `$x$`，跨页的段落接回一段。
+
 ## 代码结构：解析服务（provider）
 
 插件本体（队列、路由、产物整理、状态界面、设置页框架）不依赖任何具体的解析服务。每个服务是 `content/providers/<id>/` 下的一个模块，向 `AgentParserProviders` 注册一个描述对象，接口定义见 [content/providers.js](content/providers.js)。
@@ -159,6 +170,7 @@
 | 模块 | 内容 |
 |---|---|
 | `mineru-cloud` | mineru.net v4 API：URL 直传、上传加速、批处理、重启后续接、vlm → OCR → pipeline 的重复输出回退 |
+| `paddleocr` | 百度飞桨星河社区 PaddleOCR-VL API：multipart 上传、可选 URL 直传、重启后续接、结果整理成 MinerU 的格式 |
 | `mineru-local` | 本地 MinerU：安装与服务管理（`runtime.js`）、Tasks API 客户端（`tasks.js`） |
 
 每个服务自己声明：

@@ -72,10 +72,7 @@ AgentParserMinerUCloud.Backend = class {
 		this.enableTable = !!getPref('enableTable');
 		this.language = getPref('language') || 'ch';
 		this.uploadAcceleration = getPref('uploadAcceleration') || 'auto';
-		this.urlHosts = (getPref('urlHosts') || '')
-			.split(/[\s,;]+/)
-			.map(x => x.trim().toLowerCase().replace(/^\*?\./, ''))
-			.filter(Boolean);
+		this.urlHosts = AgentParserProviders.parseHosts(getPref('urlHosts'));
 	}
 	
 	_headers() {
@@ -541,56 +538,11 @@ AgentParserMinerUCloud.Backend = class {
 	}
 	
 	isAllowedURL(url) {
-		let host;
-		try {
-			let uri = new URL(url);
-			if (uri.protocol != 'https:' && uri.protocol != 'http:') {
-				return false;
-			}
-			host = uri.hostname.toLowerCase();
-		}
-		catch (e) {
-			return false;
-		}
-		return this.urlHosts.some(x => host == x || host.endsWith('.' + x));
+		return AgentParserProviders.isAllowedURL(url, this.urlHosts);
 	}
 	
-	/**
-	 * Make sure the URL still serves the same file we have locally
-	 *
-	 * @return {Promise<String|null>} - Reason the URL can't be used, or null if it can
-	 */
-	async checkURL(url, fileSize) {
-		try {
-			let response = await AgentParserHTTP.request('GET', url, {
-				headers: { Range: 'bytes=0-1023' },
-				timeout: 30000,
-				allowErrorStatus: true
-			});
-			let total;
-			if (response.status == 206) {
-				total = parseInt((response.headers.get('Content-Range') || '').split('/')[1]);
-			}
-			else if (response.status == 200) {
-				total = parseInt(response.headers.get('Content-Length'));
-			}
-			else {
-				return `HTTP ${response.status}`;
-			}
-			let reader = response.body.getReader();
-			let { value } = await reader.read();
-			reader.cancel().catch(() => {});
-			if (!value || String.fromCharCode(...value.slice(0, 5)) != '%PDF-') {
-				return "not a PDF";
-			}
-			if (total !== fileSize) {
-				return `size ${total} doesn't match local file (${fileSize})`;
-			}
-			return null;
-		}
-		catch (e) {
-			return e.message || String(e);
-		}
+	checkURL(url, fileSize) {
+		return AgentParserProviders.checkURL(url, fileSize);
 	}
 	
 	async _parseURL(job, url) {

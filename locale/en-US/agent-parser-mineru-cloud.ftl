@@ -19,7 +19,6 @@ agentparser-upload-acceleration-always =
 agentparser-upload-acceleration-off =
     .label = Off
 agentparser-pref-upload-acceleration-desc = MinerU stores uploaded files in Shanghai. Outside mainland China, uploading through Alibaba Cloud's transfer acceleration endpoint is usually much faster. Automatic checks the direct connection first and skips acceleration if it's already fast. If an accelerated upload fails, the file is uploaded to the original address instead.
-agentparser-pref-concurrency = Concurrent jobs:
 agentparser-pref-force-ocr =
     .label = Force OCR
 agentparser-pref-formula =

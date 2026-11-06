@@ -18,6 +18,7 @@ agentparser-alert-not-parsed = The selected items have not been parsed yet.
 agentparser-alert-library-done = All PDFs in this library have already been parsed.
 agentparser-pref-mode = Parsing Service
 agentparser-pref-url = URL:
+agentparser-pref-concurrency = Concurrent jobs:
 agentparser-pref-test =
     .label = Test Connection
 

@@ -19,7 +19,6 @@ agentparser-upload-acceleration-always =
 agentparser-upload-acceleration-off =
     .label = 关闭
 agentparser-pref-upload-acceleration-desc = MinerU 的文件存储在上海。在中国大陆以外上传时，可以改走阿里云的传输加速节点，速度通常快很多。「自动」会先测一下直连速度，直连已经够快时就不使用加速；加速上传失败时，会自动改用原地址。
-agentparser-pref-concurrency = 并发任务数：
 agentparser-pref-force-ocr =
     .label = 强制 OCR
 agentparser-pref-formula =

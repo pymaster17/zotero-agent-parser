@@ -18,6 +18,7 @@ agentparser-alert-not-parsed = 所选条目还没有解析结果。
 agentparser-alert-library-done = 当前库中的 PDF 都已解析。
 agentparser-pref-mode = 解析方式
 agentparser-pref-url = 服务地址：
+agentparser-pref-concurrency = 并发任务数：
 agentparser-pref-test =
     .label = 测试连接
 

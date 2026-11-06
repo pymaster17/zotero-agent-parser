@@ -204,6 +204,77 @@ var AgentParserProviders = {
 
 
 	/**
+	 * @param {String} value - Comma-, semicolon-, or space-separated hosts, e.g. "arxiv.org, *.example.com"
+	 * @return {String[]}
+	 */
+	parseHosts(value) {
+		return (value || '')
+			.split(/[\s,;]+/)
+			.map(x => x.trim().toLowerCase().replace(/^\*?\./, ''))
+			.filter(Boolean);
+	},
+
+
+	/**
+	 * Whether a URL is on one of the hosts, or a subdomain of one
+	 */
+	isAllowedURL(url, hosts) {
+		let host;
+		try {
+			let uri = new URL(url);
+			if (uri.protocol != 'https:' && uri.protocol != 'http:') {
+				return false;
+			}
+			host = uri.hostname.toLowerCase();
+		}
+		catch (e) {
+			return false;
+		}
+		return hosts.some(x => host == x || host.endsWith('.' + x));
+	},
+
+
+	/**
+	 * Make sure a URL still serves the same file we have locally, before giving it to a service
+	 * to download instead of uploading the file
+	 *
+	 * @return {Promise<String|null>} - Reason the URL can't be used, or null if it can
+	 */
+	async checkURL(url, fileSize) {
+		try {
+			let response = await AgentParserHTTP.request('GET', url, {
+				headers: { Range: 'bytes=0-1023' },
+				timeout: 30000,
+				allowErrorStatus: true
+			});
+			let total;
+			if (response.status == 206) {
+				total = parseInt((response.headers.get('Content-Range') || '').split('/')[1]);
+			}
+			else if (response.status == 200) {
+				total = parseInt(response.headers.get('Content-Length'));
+			}
+			else {
+				return `HTTP ${response.status}`;
+			}
+			let reader = response.body.getReader();
+			let { value } = await reader.read();
+			reader.cancel().catch(() => {});
+			if (!value || String.fromCharCode(...value.slice(0, 5)) != '%PDF-') {
+				return "not a PDF";
+			}
+			if (total !== fileSize) {
+				return `size ${total} doesn't match local file (${fileSize})`;
+			}
+			return null;
+		}
+		catch (e) {
+			return e.message || String(e);
+		}
+	},
+
+
+	/**
 	 * Poll until `fn` returns a non-undefined value
 	 *
 	 * Services that report queueing set `job.queued` while the file waits on the server and

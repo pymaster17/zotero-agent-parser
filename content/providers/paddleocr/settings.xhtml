@@ -1,0 +1,34 @@
+<!-- Settings for the paddleocr provider, inserted into the Agent Parser settings by preferences.js -->
+	<description data-l10n-id="agentparser-paddleocr-desc"/>
+	<html:div class="agentparser-provider-notice" data-l10n-id="agentparser-paddleocr-region-notice"
+		style="color: var(--accent-gold, #cc9200)"/>
+	<html:span id="agentparser-paddleocr-warning" style="color: var(--accent-red, #d70022)" hidden="hidden"/>
+	<grid class="form-grid">
+		<html:label for="agentparser-paddleocr-token" data-l10n-id="agentparser-paddleocr-token"/>
+		<html:input id="agentparser-paddleocr-token" type="password" style="flex: 1" data-setup-focus="true"
+			preference="extensions.agentparser.providers.paddleocr.token"/>
+		<html:label for="agentparser-paddleocr-model" data-l10n-id="agentparser-paddleocr-model"/>
+		<menulist id="agentparser-paddleocr-model" preference="extensions.agentparser.providers.paddleocr.model" native="true">
+			<menupopup>
+				<menuitem value="PaddleOCR-VL-1.5" label="PaddleOCR-VL-1.5"/>
+				<menuitem value="PaddleOCR-VL" label="PaddleOCR-VL"/>
+				<menuitem value="PP-StructureV3" label="PP-StructureV3"/>
+			</menupopup>
+		</menulist>
+		<html:label for="agentparser-paddleocr-hosts" data-l10n-id="agentparser-paddleocr-url-hosts"/>
+		<html:input id="agentparser-paddleocr-hosts" style="flex: 1"
+			preference="extensions.agentparser.providers.paddleocr.urlHosts"/>
+		<html:label for="agentparser-paddleocr-concurrency" data-l10n-id="agentparser-pref-concurrency"/>
+		<html:input id="agentparser-paddleocr-concurrency" type="number" min="1" max="8" style="width: 5em"
+			preference="extensions.agentparser.providers.paddleocr.concurrency"/>
+		<html:label for="agentparser-paddleocr-url" data-l10n-id="agentparser-pref-url"/>
+		<html:input id="agentparser-paddleocr-url" style="flex: 1"
+			preference="extensions.agentparser.providers.paddleocr.url"/>
+	</grid>
+	<description data-l10n-id="agentparser-paddleocr-url-hosts-desc"/>
+	<checkbox preference="extensions.agentparser.providers.paddleocr.chartRecognition" data-l10n-id="agentparser-paddleocr-chart" native="true"/>
+	<hbox align="center">
+		<button id="agentparser-paddleocr-test" data-l10n-id="agentparser-pref-test"
+			oncommand="AgentParserProviderSettings['paddleocr'].test()"/>
+		<label id="agentparser-paddleocr-test-result" flex="1" crop="end"/>
+	</hbox>
