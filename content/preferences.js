@@ -1,4 +1,4 @@
-/* global Zotero, Services, window, document */
+/* global Zotero, Services, ChromeUtils, window, document */
 
 /**
  * Agent Parser settings
@@ -177,7 +177,7 @@ window.AgentParserPrefs = {
 					section.append(this._renderFields(plugin, provider, fields));
 				}
 				if (fragment) {
-					let markup = await Zotero.File.getContentsFromURLAsync(resolve(fragment));
+					let markup = this._readURL(resolve(fragment));
 					section.append(window.MozXULElement.parseXULToFragment(markup));
 				}
 				if (test) {
@@ -197,6 +197,25 @@ window.AgentParserPrefs = {
 			}
 		}
 		this._renderUserScripts();
+	},
+
+
+	/**
+	 * Read a file inside a plugin
+	 *
+	 * Installed plugins are packed, so their files have jar: URLs, which Zotero's HTTP helpers
+	 * can't read -- a channel can, as well as chrome: and file: URLs.
+	 */
+	_readURL(url) {
+		let { NetUtil } = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys.mjs');
+		let channel = NetUtil.newChannel({ uri: url, loadUsingSystemPrincipal: true });
+		let stream = channel.open();
+		try {
+			return NetUtil.readInputStreamToString(stream, stream.available(), { charset: 'UTF-8' });
+		}
+		finally {
+			stream.close();
+		}
 	},
 
 
